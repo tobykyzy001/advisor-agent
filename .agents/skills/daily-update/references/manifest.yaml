@@ -1,0 +1,17 @@
+# 知识资产更新清单（daily-update 模板，已提交）
+# 说明：last_update 为运行时状态，首次运行脚本会自动从本模板生成
+#       output/skill-state/update-manifest.yaml 并把 last_update 置空。
+#       之后更新回写只写状态文件，不改本模板。
+# 新增资产：在 assets 下加一条即可，脚本按 cadence 自动管理。
+
+assets:
+  - id: prosperity-sectors
+    title: 当期景气行业快照
+    cadence: quarterly          # 按季度更新
+    source_skill: prosperity-analysis
+    output_path: output/sectors/current-sectors.md
+    update_instruction: >
+      调用 prosperity-analysis 技能，联网拉取最新宏观/行业/商品数据，
+      重写 output/sectors/current-sectors.md 并标注数据时点(YYYY-MM-DD)，
+      列出景气向上行业、偏弱行业、宏观信号与风险提示。
+    last_update: null
