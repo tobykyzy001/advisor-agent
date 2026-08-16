@@ -1,0 +1,64 @@
+- id: PRO-001
+  category: prosperity
+  title: 景气投资非价值投资
+  statement: 景气投资本质是「以盈利基本面为动量的成长投资」，买的是盈利增速向上，而非便宜；进场/离场/风险与价值投资不同，勿用静态低估值作为买入理由。
+  rationale: 景气投资在进场逻辑(成长vs便宜)、离场逻辑(景气见顶vs均值回归)、风险画像(戴维斯双杀vs价值陷阱)上与价值投资不同。
+  source: 业内通行(天风/长江/广发/中金框架)
+
+- id: PRO-002
+  category: prosperity
+  title: 赚钱机制是戴维斯双击
+  statement: 盈利上行×估值扩张同时发生产生相乘涨幅；景气投资要在景气向上阶段捕捉双击，在盈利与预期见顶前避开双杀。
+  rationale: 股价=EPS×PE，两者同向上行即双击，反之双杀，涨幅/跌幅被放大。
+  source: 戴维斯家族框架
+
+- id: PRO-003
+  category: prosperity
+  title: 拐点优先于绝对增速
+  statement: 市场敏感的是盈利增速的方向(二阶导)，而非绝对值；分析师一致预期开始逐季上调=景气反转初段买点，密集下修=景气见顶警示，即便当期增速仍高。
+  rationale: A股经验中「盈利二阶导转正(预期上修)」对超额收益的指示意义常强于盈利一阶导绝对值。
+  severity: warn
+
+- id: PRO-004
+  category: prosperity
+  title: 周期股PE悖论：勿在静态低PE处买入
+  statement: 周期股盈利顶点PE最低反而是卖出信号，盈利谷底PE最高往往是底部买入区；机械"买低PE卖高PE"在周期股上会做反，且低PE可能正是价值陷阱(盈利快速恶化)。
+  rationale: 静态PE以当期盈利为分母，周期位置颠倒。用中枢盈利+前瞻盈利+分位替代。
+  severity: critical
+  source: 彼得·林奇《战胜华尔街》
+
+- id: PRO-005
+  category: prosperity
+  title: 景气股估值口径
+  statement: 用前瞻/动态PE、周期中枢盈利(类CAPE)、PEG、逆向DCF隐含增长率、行业PE分位、EV/EBITDA(重资产)、PS(早期未盈利)来估值，替代静态PE/PB/DCF。
+  rationale: 周期/高增长公司静态估值在盈利高低点天然失真，DCF长期假设高度不确定。
+  severity: warn
+
+- id: PRO-006
+  category: prosperity
+  title: 三位一体判断
+  statement: 景气度(周期位置+盈利方向)、估值(前瞻/中枢+分位)、交易结构(拥挤度/机构仓位)三者共振向上才是高质量买点；仅"景气好"或仅"便宜"都易踩坑。
+  rationale: 景气与股价可能脱钩(预期透支/拥挤度高/估值分位过高提前见顶)。
+  severity: warn
+
+- id: PRO-007
+  category: prosperity
+  title: 景气度领先指标
+  statement: 用订单、产能利用率、库存周期、产品价格、PPI、PMI、社融与M2 以及美林时钟(增长×通胀)判断所处周期位置；估值必须放在周期位置上判断。
+  rationale: PPI与周期股盈利高度相关，信用扩张领先需求与企业盈利。
+  severity: info
+
+- id: PRO-008
+  category: prosperity
+  title: 识别伪景气
+  statement: 用扣非、现金流、毛利率稳定性、订单与应收/存货匹配度验证盈利真实性；区分宏观行业景气(β)与个股兑现(α)，以业绩预告与预期上修做二次确认。
+  rationale: 一次性收益/会计调节粉饰盈利；宏观景气传导到个股报表存在时滞。
+  severity: warn
+
+- id: PRO-009
+  category: prosperity
+  title: 景气风险约束
+  statement: 景气投资天然集中、波动大，单行业仓位与单标的上限、回撤预警等风控约束优先于景气判断，防止高位集中度过高。
+  rationale: 景气见顶易触发戴维斯双杀，集中度推高组合回撤。
+  severity: warn
+  conditions: ["industry_weight > max_single_industry_pct"]

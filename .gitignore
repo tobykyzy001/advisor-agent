@@ -23,6 +23,7 @@ data/cache/
 output/reports/*.md
 output/reports/*.html
 output/reports/*.json
+output/sectors/
 
 # ---- Tooling ----
 .pytest_cache/
