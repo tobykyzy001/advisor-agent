@@ -1,0 +1,31 @@
+- id: SCR-001
+  category: screening
+  title: 估值选股核心因子
+  statement: 初选优先关注低估+高质量组合：PE低于合理带、ROE>15%、PEG<1.5、股息率有支持。
+  rationale: 兼顾便宜与质量，降低价值陷阱概率。
+  severity: info
+
+- id: SCR-002
+  category: screening
+  title: 规避财务异常
+  statement: 剔除 ROE 为负、长期亏损失速、现金流长期为负的标的。
+  rationale: 避免价值陷阱与基本面恶化标的。
+  severity: warn
+
+- id: SCR-003
+  category: screening
+  title: 信号需结合估值分位
+  statement: 在估值处于历史低位(分位<30%)时买入信号更可靠，高位追高需谨慎。
+  severity: info
+
+- id: STR-001
+  category: strategy
+  title: 分批建仓
+  statement: 看多但不重仓一笔入场，可分2~3批建仓以摊薄择时风险。
+  severity: info
+
+- id: STR-002
+  category: strategy
+  title: 再平衡纪律
+  statement: 定期(如每季度)审视仓位与目标权重偏离，超阈则再平衡，纪律优先于主观判断。
+  severity: info

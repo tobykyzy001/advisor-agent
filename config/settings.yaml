@@ -1,0 +1,36 @@
+# quantify-agent 主配置
+# 运行时优先级：环境变量(QUANTIFY_*) > settings.yaml > 代码默认值
+
+app:
+  name: quantify-agent
+  env: dev          # dev | prod
+  data_dir: "./data/cache"
+
+data:
+  provider: akshare          # akshare | tushare | local
+  cache_ttl_seconds: 3600    # 缓存有效期
+  default_market: A           # A | HK
+  asharpe_index: "000300"     # 沪深300，用作无风险/基准参考
+
+valuation:
+  risk_free_rate: 0.022       # 无风险利率（近10年国债收益率近似值）
+  equity_risk_premium: 0.06   # 股权风险溢价
+  # 各估值指标的安全边际偏好（用于信号打分）
+  prefer_low_pe: true
+  prefer_low_pb: true
+  pe_band: [8.0, 25.0]        # 相对A股合理的PE观察区间
+  pb_band: [1.0, 6.0]
+
+portfolio:
+  max_position_pct: 0.20      # 单标的最大仓位
+  max_single_industry_pct: 0.30
+  target_drawdown_limit: 0.15  # 目标最大回撤控制
+  cash_buffer_min: 0.05
+
+knowledge:
+  rules_dir: "quantify/knowledge/rules"
+
+llm:
+  enabled: true
+  max_tokens: 4000
+  temperature: 0.3

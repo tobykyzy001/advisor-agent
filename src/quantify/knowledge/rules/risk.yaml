@@ -1,0 +1,27 @@
+- id: RSK-001
+  category: risk
+  title: 单标的上限
+  statement: 单只标的占组合仓位原则上不超过20%，避免集中度过高的非系统性风险暴露。
+  severity: warn
+  conditions: ["position_pct > max_position_pct"]
+
+- id: RSK-002
+  category: risk
+  title: 行业集中度
+  statement: 单一行业累计仓位不超过30%，防止行业景气度冲击组合。
+  severity: warn
+  conditions: ["industry_weight > max_single_industry_pct"]
+
+- id: RSK-003
+  category: risk
+  title: 现金缓冲
+  statement: 组合至少保留5%现金缓冲用于应对赎回与调仓，市场极端时可提高至20%以上。
+  severity: info
+
+- id: RSK-004
+  category: risk
+  title: 回撤预警
+  statement: 组合回撤接近或超过10%~15%时应审视是否超配高风险标的，必要时降仓。
+  rationale: 控制最大回撤是长期存活的前提。
+  severity: warn
+  conditions: ["drawdown > 0.10"]

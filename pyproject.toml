@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantify-agent"
+version = "0.1.0"
+description = "面向A股/港股的投资顾问式智能体：估值研究、选股信号、组合管理与风控"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "quantify" }]
+keywords = ["investment", "valuation", "advisor", "agent", "A股", "港股"]
+
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.0",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "httpx>=0.26",
+    "rich>=13.0",
+    "akshare>=1.12",
+]
+
+[project.optional-dependencies]
+llm = ["openai>=1.30"]
+dev = ["pytest>=8.0", "pytest-cov>=4.0", "ruff>=0.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"quantify.knowledge" = ["rules/**/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

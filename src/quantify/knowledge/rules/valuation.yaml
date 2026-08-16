@@ -1,0 +1,36 @@
+- id: VAL-001
+  category: valuation
+  title: PE 非负且有限才有意义
+  statement: 负PE或PE为NaN时不可用于相对估值，应改用PB/PS等替代口径，避免误导。
+  rationale: PE 为负说明当期亏损，市盈率失去意义。
+  severity: warn
+  conditions: ["pe_ttm is None or pe_ttm <= 0"]
+
+- id: VAL-002
+  category: valuation
+  title: 用5年ROE中位数评价盈利质量
+  statement: 以近5年ROE中位数为盈利质量基准，>20% 视为优秀，10%~20% 一般，<10% 偏弱。
+  rationale: 单一报告期ROE受非经常损益扰动，中位数更稳健。
+  source: 经验规则
+  conditions: ["roe_trend length >= 3"]
+
+- id: VAL-003
+  category: valuation
+  title: 高ROE给予PE溢价
+  statement: 高ROE标的目标PE可上移到参考区间上沿；低ROE落到下沿。
+  rationale: 质量越高的公司持续创造回报能力越强，市场愿给更高估值。
+  severity: info
+
+- id: VAL-004
+  category: valuation
+  title: 股息折现需折现率大于增速
+  statement: 戈登模型要求折现率严格大于永续增速，否则模型无有限值，改用两阶段或市盈率法。
+  rationale: r<=g 时 DDM 分母非正。
+  severity: warn
+
+- id: VAL-005
+  category: valuation
+  title: PEG 视角
+  statement: PEG<1 相对成长而言估值偏低，PEG>1.5 偏贵；对高增长公司需结合可持续性判断。
+  rationale: 衡量估值与盈利增速的匹配度。
+  severity: info
