@@ -51,5 +51,6 @@ output/skill-state/
 
 ## 说明
 - 新增知识资产：在 `references/manifest.yaml` 的 `assets` 里加一条（id、cadence、output_path、update_instruction），脚本自动按周期管理。
+- **持仓跟踪不归本技能管**：用户的股票持仓由 `portfolio-tracker` 技能管理，每条持仓自带 `cadence`，用 `portfolio-tracker/scripts/manage_holdings.py` 独立周期复核——不要把持仓当知识资产加进本清单的 `assets`。
 - 测试/演示：`--now YYYY-MM-DD` 可指定"当前时间"查看到期结果；`--mark <id>` 按该时间回写上次更新。
 - 可选的持续自动化：若需要系统到点自动跑本技能，用 CronCreate 按季度/每日调度（由运行环境的模型执行更新）。

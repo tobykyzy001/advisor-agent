@@ -1,0 +1,62 @@
+# AGENTS.md
+
+面向 **A股/港股** 的投资顾问式智能体项目：投顾知识库 + 估值研究 + 选股信号 + 组合风控。偏**研究/估值**，不涉及回测。代码、配置、注释均为**中文**。
+
+> ⚠️ 本仓库所有输出仅供研究参考，不构成投资建议。
+
+## 快速上手
+
+```bash
+.venv/Scripts/python.exe -m quantify.cli research 600519 000333   # CLI 跑一次研究
+pytest                                  # 单元测试
+```
+
+- 装包：`pip install -e ".[dev]"`（模块在 `src/quantify`，已 editable 安装到 `.venv`）。
+- Python ≥ 3.11（仓库在 3.12 验证），虚拟环境在 `.venv`（勿提交）。
+- 编程入口：`from quantify.agent.orchestrator import InvestAdvisor; InvestAdvisor().research([...])`。
+
+## 目录结构
+
+```
+config/settings.yaml        # 主配置
+src/quantify/
+  ├── config.py             # 配置加载
+  ├── data/                 # 数据层：schema / fetcher(akshare) / cache
+  ├── valuation/            # 估值：metrics / dcf / relative / core
+  ├── knowledge/            # 投顾知识库：rules/*.yaml + 检索
+  ├── analysis/             # 选股评分 / 信号 / 市场概览
+  ├── portfolio/            # 配仓 / 风控
+  ├── agent/                # LLM抽象 / 编排 / 研报生成
+  └── cli.py                # 命令行入口
+tests/                      # 单元测试
+output/reports/             # 生成的研报（gitignore）
+output/sectors/             # 当期景气行业快照（gitignore，见下）
+output/skill-state/         # daily-update 运行时状态（gitignore）
+output/portfolio/           # 持仓清单（gitignore，portfolio-tracker 运行时数据）
+.agents/skills/             # ZCode 技能：prosperity-analysis / daily-update / stock-valuation / portfolio-tracker
+```
+
+## 配置约定
+
+优先级：环境变量 `QUANTIFY_*`（嵌套用 `__`）> `config/settings.yaml` > pydantic 默认值。
+第三方密钥（无前缀）从 `.env` / 进程环境读取：`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`、`TUSHARE_TOKEN`（见 `.env.example`）。
+未配置 `LLM_API_KEY` 时研报自动退回**离线规则模式**，功能仍可端到端跑通。
+
+## 数据源
+
+- 默认 `provider: akshare`（联网实时）；网络不可用或未安装时自动回退 `LocalProvider`（内置示例数据），保证离线可演示。
+- `provider: local` 强制用示例数据。港股/财务字段扩展在 `data/fetcher.py` 的 `AkshareProvider` 中。
+- 联网拿到的宏观/行业数据标注数据时点。
+
+## 技能与「方法 vs 动态数据」提交边界（重要）
+
+- `.agents/skills/` 下是**随仓库提交**的方法/知识：`prosperity-analysis`（行业景气度方法论）、`daily-update`（知识资产更新周期管理）、`stock-valuation`（单一个股估值方法论，含直连行情脚本 `scripts/fetch_snapshot.py`）、`portfolio-tracker`（持仓清单管理，每条持仓按 `cadence` 定期复核投资类型/估值方式/估值价格）。
+- `output/sectors/`、`output/skill-state/`、`output/portfolio/` 是 skill **运行时生成的易过期/含个人信息动态输出**，已被 `.gitignore` 忽略，**不提交**。景气行业快照每次运行 `prosperity-analysis` 时重写 `output/sectors/current-sectors.md`；持仓清单首次运行 `portfolio-tracker` 的 `manage_holdings.py` 时从模板生成。
+- 更新知识资产：用 `daily-update` 技能，运行 `python .agents/skills/daily-update/scripts/check_updates.py` 查看到期（景气快照按季度），更新后 `--mark <id>` 回写。修改该技能用**系统 python**，勿用需联网的依赖。持仓复核用 `portfolio-tracker`，不挂到 `daily-update` 的资产清单（它是逐条自带的 cadence，非知识资产）。
+- **新增/调整技能时**：梳理它与其他技能的衔接关系，判断是否需要同步更新——`AGENTS.md` 的技能清单/提交边界，以及相关技能 `SKILL.md` 里的分工说明（如「与其它技能分工」一节）。避免职责重叠或登记遗漏。
+
+## 工程约定
+
+- 代码风格：ruff（line-length=100, py311），`src` 布局 + setuptools 自动发现。
+- 新增知识规则放 `src/quantify/knowledge/rules/*.yaml`（package-data 会自动打包）。
+- 改动估值/风控/选股逻辑时，先读 `docs/prosperity_investing.md` 与 `knowledge/rules/` 下的估值、策略、风控规则。

@@ -1,0 +1,20 @@
+# 持仓字段模板（portfolio-tracker，随仓库提交）
+# 说明：本文件 holdings 为空，是字段结构与默认值的"种子"；首次运行 manage_holdings.py
+#       会据此生成 output/portfolio/holdings.yaml（已被 .gitignore 忽略，含真实持仓不入库）。
+#       之后增删改都只写运行时文件，不改本模板。
+#
+# 每条持仓字段：
+#   code        股票代码（A股6位，如 600519；港股/其它市场请自行约定代码并在备注标注）
+#   name        名称
+#   投资类型     投资 | 投机（决定性标签，见 SKILL.md「投资类型：投机 vs 投资」）
+#   估值方式     对应 stock-valuation 的生意属性→估值口径，写一句（如 "DCF+股息率"/"PB+RNAV"）
+#   估值价格     该口径的合理估值/目标价，可单值或区间（如 1500 或 "1400~1600"）
+#   现价        最近一轮行情快照的现价
+#   结论        低估 / 合理 / 高估 + 一句话
+#   更新时点     最近一轮复核日期 YYYY-MM-DD
+#   cadence     复核周期 daily/weekly/monthly/quarterly/yearly（默认 monthly）
+#   last_update 运行时周期标识（脚本自动写回，勿手填）
+#   建仓价      可选
+#   数量        可选
+#   备注        可选
+holdings: []

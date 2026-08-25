@@ -25,6 +25,8 @@ output/reports/*.html
 output/reports/*.json
 output/sectors/
 output/skill-state/
+output/portfolio/
+output/imports/
 
 # ---- Tooling ----
 .pytest_cache/
