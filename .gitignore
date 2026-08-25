@@ -20,13 +20,7 @@ data/cache/
 *.h5
 
 # ---- Outputs ----
-output/reports/*.md
-output/reports/*.html
-output/reports/*.json
-output/sectors/
-output/skill-state/
-output/portfolio/
-output/imports/
+output/
 
 # ---- Tooling ----
 .pytest_cache/
