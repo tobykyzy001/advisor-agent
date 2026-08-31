@@ -13,6 +13,7 @@
 //                  表单内可临时覆盖。
 
 import { createRequire } from 'node:module'
+import { createTushareMcpBridge } from './mcp-tushare.js'
 
 const require = createRequire(import.meta.url)
 
@@ -34,6 +35,7 @@ const defaults = Object.freeze({
   enabled: true,
   enabledSkills: DEFAULT_ENABLED_SKILLS,
   defaultTarget: 'new',
+  tushareMcpUrl: '',
 })
 
 function publicConfig(config = {}) {
@@ -41,6 +43,7 @@ function publicConfig(config = {}) {
     enabled: config.enabled !== false,
     enabledSkills: Array.isArray(config.enabledSkills) ? config.enabledSkills : defaults.enabledSkills.slice(),
     defaultTarget: config.defaultTarget === 'current' ? 'current' : 'new',
+    tushareMcpUrl: typeof config.tushareMcpUrl === 'string' ? config.tushareMcpUrl : '',
   }
 }
 
@@ -63,6 +66,9 @@ export const Config = Schema
         Schema.const('new').description('新开会话'),
         Schema.const('current').description('当前会话'),
       ]).default('new').description('点击「运行」后默认把技能指令投递到哪里（表单内可临时切换）'),
+      tushareMcpUrl: Schema.string().default('')
+        .role('secret')
+        .description('tushare MCP 完整 URL（含 token，形如 http://…/dingall?token=…）；保存后立即生效，留空则断开'),
     }).description('投研工具：以表单化方式调用投顾技能（个股估值等）')
   : null
 
@@ -153,6 +159,26 @@ function mount(ctx, config = {}) {
         }),
         'advisor-agent: local config endpoint',
       )
+    })
+    // 在 tools 语境下建 tushare MCP 连接桥，并在 URL 变化时热切换（立即生效）。
+    ctx.inject(['tools'], (toolsCtx) => {
+      const bridge = createTushareMcpBridge(toolsCtx)
+      toolsCtx.effect(() => () => bridge.dispose(), 'advisor-agent: tushare mcp bridge')
+
+      // 首次挂载：用当前配置里的 URL 连接一次（若已填）。
+      let lastUrl = settings.get().tushareMcpUrl
+      if (typeof lastUrl === 'string' && lastUrl.trim() !== '') {
+        void bridge.applyUrl(lastUrl)
+      }
+
+      // 订阅设置变化：URL 改变 → 立即重连（保存即生效）。
+      const offWatch = settings.watch((next, prev) => {
+        const nextUrl = next?.tushareMcpUrl
+        const prevUrl = prev?.tushareMcpUrl
+        if (nextUrl === prevUrl) return
+        void bridge.applyUrl(typeof nextUrl === 'string' ? nextUrl : '')
+      })
+      toolsCtx.effect(() => offWatch, 'advisor-agent: tushare mcp url watch')
     })
   } else {
     logger.warn?.('advisor-agent: no ctx.inject, config endpoint not mounted')
