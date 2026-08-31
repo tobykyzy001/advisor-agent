@@ -1,0 +1,15 @@
+# advisor-agent 宿主侧 patch：注册插件行及其可配置项。
+# 由 dsh-app-boot 的 profile 组合逻辑应用（作为 bundle 的 patch）。
+#
+# 配置项：
+#   enabled        总开关：关闭后侧边栏不出现「投研工具」入口
+#   enabledSkills  启用的 skill id 列表（对应 lib/client.js 内联注册表 ADVISOR_SKILLS）
+#   defaultTarget  点击「运行」默认投递：'new'(新开会话，默认) | 'current'(当前会话)
+- insert:
+    - id: advisor-agent
+      name: advisor-agent
+      config:
+        enabled: true
+        enabledSkills:
+          - stock-valuation
+        defaultTarget: new

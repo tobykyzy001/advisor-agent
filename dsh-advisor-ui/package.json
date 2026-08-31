@@ -1,0 +1,53 @@
+{
+  "name": "advisor-agent",
+  "version": "0.2.0",
+  "description": "投研工具：在 DSH Web GUI 侧边栏以表单化方式调用投顾技能（个股估值、行业景气、持仓复核等），点击即运行「拉数据→分析→LLM」流水线。",
+  "author": "advisor-agent",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ],
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": ">=3.18.0"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "investment",
+    "valuation",
+    "advisor",
+    "skill"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-org/advisor-agent.git"
+  }
+}
