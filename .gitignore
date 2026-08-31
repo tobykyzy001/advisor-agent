@@ -12,6 +12,8 @@ venv/
 .env
 *.pem
 *.key
+.agents/mcp.json
+.zcode/config.json
 
 # ---- Data cache ----
 data/cache/

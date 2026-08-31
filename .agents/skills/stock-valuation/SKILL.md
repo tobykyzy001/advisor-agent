@@ -16,7 +16,8 @@ description: 单一个股估值分析方法论。当用户要求对某一只具�
 **取实时估值字段 → 识别生意属性 → 选估值口径 → 交叉收敛 → 给方向性结论 + 关键节点**。整套核心是两步「分类」，其余是执行。
 
 ### 第 1 步：取实时估值字段（数据获取）
-- 用 `scripts/fetch_snapshot.py <代码>` 拉取最新价、PB、PE 三口径(静态/TTM/动态)、总市值/流通市值、营收与净利同比、换手率、涨跌幅。
+- **首选 tushare MCP**：在会话内直接调 `mcp__tushareMcp__daily_basic`(PB/PE两口径/市值/股息率/换手)、`mcp__tushareMcp__daily`(现价/昨收/涨跌幅)、`mcp__tushareMcp__stock_basic`(名称/行业)、`mcp__tushareMcp__fina_indicator`(营收与净利同比/毛利率/ROE)。字段映射、`ts_code` 后缀规则、口径局限(无前瞻PE、港股缺估值字段)见 `references/data-source.md`。
+- **tushare 不可用/失败时**：退回 `scripts/fetch_snapshot.py <代码>` 拉取最新价、PB、PE 三口径(静态/TTM/动态)、总市值/流通市值、营收与净利同比、换手率、涨跌幅（腾讯/东财双源）。
 - 脚本用 `curl` 直连（Git Bash 下 curl **不读 Windows 系统代理**，能绕过本机被墙/损坏的代理）腾讯 `qt.gtimg.cn` 与东财 `push2.eastmoney.com` 公开接口，双源交叉核对。
 - **若 akshare/CLI 报 `ProxyError` 回退到 `LocalProvider` 示例数据，不要用示例数据凑数**——改用本脚本或 curl 直连（详见 `references/data-source.md`）。
 - 数据务必标注**时点**（接口返回 `YYYYMMDDHHMMSS`）。东财偶发「接收失败」，重试或退回腾讯源即可。

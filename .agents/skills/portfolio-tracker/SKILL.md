@@ -64,7 +64,7 @@ python .agents/skills/portfolio-tracker/scripts/manage_holdings.py
 
 ### 3. 到期复核（核心）
 对每条 `DUE` 的持仓执行：
-1. **取现价**：调用 stock-valuation 的 `scripts/fetch_snapshot.py <code>` 拉最新 PB/PE/市值/涨跌。
+1. **取现价**：优先用 tushare MCP（`mcp__tushareMcp__daily_basic` 取 PB/PE/市值/股息率、`mcp__tushareMcp__daily` 取现价/涨跌幅，字段映射见 stock-valuation 的 `references/data-source.md`）；tushare 不可用时退回 stock-valuation 的 `scripts/fetch_snapshot.py <code>`。
 2. **重估**：按该持仓已登记的 `估值方式`（或现场重判生意属性后更新口径），刷新 `估值价格`、`结论`（低估/合理/高估+一句话）。
 3. **重判投资类型**：比较现价 vs 估值价格，套上面「投资类型动态变化」规则，更新 `投资类型`。
 4. **回写**：
