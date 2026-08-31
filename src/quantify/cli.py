@@ -27,10 +27,41 @@ def main(argv: list[str] | None = None) -> None:
     p_research.add_argument("--out", default="output/reports")
     p_research.add_argument("--json", action="store_true", help="同时输出JSON结果")
 
+    p_copy = sub.add_parser("copy", help="抄作业分析：抓取群作业链接→还原路线→回测")
+    p_copy.add_argument("url", nargs="?", help="作业链接，如 http://.../dingall?a=xxx")
+    p_copy.add_argument("--html", help="本地作业 HTML 文件（离线分析）")
+    p_copy.add_argument("--quotes", help="标的日线 JSON 路径（回测用，{ts_code:[{date,open,close}]}）")
+    p_copy.add_argument("--period-end", default=None, help="回测期末 YYYY-MM-DD")
+    p_copy.add_argument("--out", default=None)
+
     args = parser.parse_args(argv)
 
     if args.cmd == "research":
         _cmd_research(args)
+    elif args.cmd == "copy":
+        _cmd_copy(args)
+
+
+def _cmd_copy(args: argparse.Namespace) -> None:
+    """抄作业：转调 copy-trade 技能的 analyze 脚本。"""
+    import subprocess
+    import sys as _sys
+    from pathlib import Path
+
+    script = Path(".agents/skills/copy-trade/scripts/analyze.py")
+    cmd = [_sys.executable, str(script)]
+    if args.html:
+        cmd += ["--html", args.html]
+    elif args.url:
+        cmd += [args.url]
+    if args.quotes:
+        cmd += ["--quotes", args.quotes]
+    if args.period_end:
+        cmd += ["--period-end", args.period_end]
+    if args.out:
+        cmd += ["--out", args.out]
+    result = subprocess.run(cmd)
+    raise SystemExit(result.returncode)
 
 
 def _cmd_research(args: argparse.Namespace) -> None:

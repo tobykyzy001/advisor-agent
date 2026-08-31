@@ -34,7 +34,8 @@ output/sectors/             # 当期景气行业快照（gitignore，见下）
 output/skill-state/         # daily-update 运行时状态（gitignore）
 output/portfolio/           # 持仓清单（gitignore，portfolio-tracker 运行时数据）
 output/videos/              # B站视频转录产物（gitignore，bili-video-summary 运行时数据）
-.agents/skills/             # ZCode 技能：prosperity-analysis / daily-update / stock-valuation / portfolio-tracker / bili-video-summary
+output/copy-trade/          # 抄作业运行时产物（gitignore，copy-trade：原始HTML/解析消息流/回测结果/别名覆盖）
+.agents/skills/             # ZCode 技能：prosperity-analysis / daily-update / stock-valuation / portfolio-tracker / bili-video-summary / copy-trade
 ```
 
 ## 配置约定
@@ -52,7 +53,7 @@ output/videos/              # B站视频转录产物（gitignore，bili-video-su
 
 ## 技能与「方法 vs 动态数据」提交边界（重要）
 
-- `.agents/skills/` 下是**随仓库提交**的方法/知识：`prosperity-analysis`（行业景气度方法论）、`daily-update`（知识资产更新周期管理）、`stock-valuation`（单一个股估值方法论，含直连行情脚本 `scripts/fetch_snapshot.py`）、`portfolio-tracker`（持仓清单管理，每条持仓按 `cadence` 定期复核投资类型/估值方式/估值价格）、`bili-video-summary`（B站视频音频下载+离线转录工具，转录产物写 `output/videos/`，分析环节复用 stock-valuation / prosperity-analysis 的方法与数据口径）。
+- `.agents/skills/` 下是**随仓库提交**的方法/知识：`prosperity-analysis`（行业景气度方法论）、`daily-update`（知识资产更新周期管理）、`stock-valuation`（单一个股估值方法论，含直连行情脚本 `scripts/fetch_snapshot.py`）、`portfolio-tracker`（持仓清单管理，每条持仓按 `cadence` 定期复核投资类型/估值方式/估值价格）、`bili-video-summary`（B站视频音频下载+离线转录工具，转录产物写 `output/videos/`，分析环节复用 stock-valuation / prosperity-analysis 的方法与数据口径）、`copy-trade`（抄作业分析：抓取群作业链接→结构化消息→还原持仓路线→轻量回测→结合 tushare 行情判断「值不值得抄」，别名→标的映射需人工确认后固化到 `output/copy-trade/alias-map.override.yaml`）。
 - `output/sectors/`、`output/skill-state/`、`output/portfolio/` 是 skill **运行时生成的易过期/含个人信息动态输出**，已被 `.gitignore` 忽略，**不提交**。景气行业快照每次运行 `prosperity-analysis` 时重写 `output/sectors/current-sectors.md`；持仓清单首次运行 `portfolio-tracker` 的 `manage_holdings.py` 时从模板生成。
 - tushare MCP 的 URL/token 由用户在投研工具设置卡片里填写，存于 DSH 本地 settings 文档（不入库）；他人需用自己的 tushare token 复现。
 - 更新知识资产：用 `daily-update` 技能，运行 `python .agents/skills/daily-update/scripts/check_updates.py` 查看到期（景气快照按季度），更新后 `--mark <id>` 回写。修改该技能用**系统 python**，勿用需联网的依赖。持仓复核用 `portfolio-tracker`，不挂到 `daily-update` 的资产清单（它是逐条自带的 cadence，非知识资产）。

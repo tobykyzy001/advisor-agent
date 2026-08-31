@@ -29,7 +29,7 @@ try {
 }
 
 // 默认启用的技能固定来自 lib/client.js 内联注册表 ADVISOR_SKILLS 的 id 集合；若丢失，用最小兜底。
-export const DEFAULT_ENABLED_SKILLS = ['stock-valuation']
+export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade']
 
 const defaults = Object.freeze({
   enabled: true,
@@ -41,7 +41,14 @@ const defaults = Object.freeze({
 function publicConfig(config = {}) {
   return {
     enabled: config.enabled !== false,
-    enabledSkills: Array.isArray(config.enabledSkills) ? config.enabledSkills : defaults.enabledSkills.slice(),
+    // 升级兼容：把「新默认启用的技能」并入已保存列表，避免旧 settings 里只有旧默认，
+    // 导致新增技能（如 copy-trade）被 enabledSkills 过滤掉、入口消失。
+    enabledSkills: (() => {
+      const saved = Array.isArray(config.enabledSkills) ? config.enabledSkills : defaults.enabledSkills.slice()
+      const merged = new Set(saved)
+      for (const id of defaults.enabledSkills) merged.add(id)
+      return [...merged]
+    })(),
     defaultTarget: config.defaultTarget === 'current' ? 'current' : 'new',
     tushareMcpUrl: typeof config.tushareMcpUrl === 'string' ? config.tushareMcpUrl : '',
   }
