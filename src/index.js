@@ -8,14 +8,13 @@
 //
 // 配置项：
 //   enabled        总开关：关闭后侧边栏不出现「投研工具」入口
-//   enabledSkills  启用的 skill id 列表（对应 skills/skills.js 里的 id）
+//   enabledSkills  启用的 skill id 列表（对应 lib/client.js 内联注册表 ADVISOR_SKILLS）
 //   defaultTarget  点「运行」的默认投递目标：'new'（新开会话，默认）| 'current'（当前会话）
 //                  表单内可临时覆盖。
 
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const pkg = require('../package.json')
 
 export const name = 'advisor-agent'
 export const inject = ['settings']
@@ -28,7 +27,7 @@ try {
   // schemastery 未安装：跳过宿主配置 schema，仅保留 /config 端点（值取默认）。
 }
 
-// 默认启用的技能固定来自 skills/skills.js 的 id 集合；若丢失，用最小兜底。
+// 默认启用的技能固定来自 lib/client.js 内联注册表 ADVISOR_SKILLS 的 id 集合；若丢失，用最小兜底。
 export const DEFAULT_ENABLED_SKILLS = ['stock-valuation']
 
 const defaults = Object.freeze({

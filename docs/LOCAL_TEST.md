@@ -5,7 +5,7 @@
 ## 前置
 
 - 已安装并能运行 DeepSeek Harness WebUI（`dsh web`）。
-- 已在 `D:\Coding\advisor-agent` 下准备好本插件目录（`dsh-advisor-ui/`）。
+- 已在 `D:\Coding\advisor-agent` 下准备好本仓库（仓库根即插件包根）。
 
 ## 步骤
 
@@ -14,7 +14,7 @@
 2. **安装插件**（本地路径）：
 
    ```powershell
-   dsh plugin --profile web add "D:\Coding\advisor-agent\dsh-advisor-ui"
+   dsh plugin --profile web add "D:\Coding\advisor-agent"
    ```
 
    底层等价于在 `~/.dsh/profiles/web` 里执行 `pnpm add <路径>`，并把本包（因声明了 `dsh.bundle`）自动 reconcile 进 `dsh.profile.bundles`。
@@ -28,7 +28,7 @@
 
 4. **浏览器验证**：打开 `http://127.0.0.1:3080`，
    - **左侧栏底部**应出现「投研工具」按钮。
-   - 点它弹窗：选择工具（个股估值）、股票代码输入、市场下拉、**投递目标**（新开会话/当前会话）、运行按钮。
+   - 点它弹窗：选择工具（个股估值）、股票名或代码输入、市场下拉、**投递目标**（新开会话/当前会话）、运行按钮。
    - **设置 → 插件**里应有「投研工具」卡片（技能开关 + 默认投递目标）。
 
 5. **点「运行」**：输入 `600519` → 市场 A股 → 投递目标选「新开会话」→ 运行。
@@ -51,7 +51,7 @@
 面板拼出的指令形如：
 
 ```
-请调用 skill「stock-valuation」执行个股估值（股票代码: 600519；市场: A）。对一只 A股/港股 做估值判断：贵不贵 / 值多少 / 目标价 / 何时重估
+请调用 skill「stock-valuation」执行个股估值（股票名或代码: 600519；市场: A）。对一只 A股/港股 做估值判断：贵不贵 / 值多少 / 目标价 / 何时重估
 ```
 
 若 agent 未据此触发 `stock-valuation` 技能，需在 `lib/client.js` 的 `buildInstruction` 里调整措辞，或确认 agent 侧 `.agents/skills/stock-valuation/SKILL.md` 的触发条件能命中该文本。

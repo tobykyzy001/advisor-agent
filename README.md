@@ -1,11 +1,102 @@
-# quantify-agent
+# advisor-agent
 
-面向 **A股/港股** 的投资顾问式智能体（投顾知识库 + 估值研究 + 选股信号 + 组合风控）。
-偏 **研究/估值** 类，不做回测；配合 ZCode 形成「数据 → 估值 → 选股 → 配仓 → 风控 → 研报」的完整研究闭环。
+面向 **A股/港股** 的投资顾问式智能体（投顾知识库 + 估值研究 + 选股信号 + 组合风控）。偏 **研究/估值** 类，不做回测。
 
 > ⚠️ 本项目输出仅供研究参考，不构成任何投资建议。
 
-## 核心能力
+本仓库同时也是一个可开源的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）第三方插件，在 DSH Web GUI **侧边栏**提供常驻「投研工具」入口，以**表单化**方式调用投顾 skill —— 点击即运行「拉数据 → 分析 → LLM 分析」流水线，把命令行式的 skill 变成可点击、可输参数的图形交互页。
+
+---
+
+## 一、作为 DSH 插件使用（投研工具）
+
+### 它解决什么问题
+
+`.agents/skills` 里的 skill（个股估值、行业景气、持仓复盘、视频总结等）本质都是：
+
+```
+输入参数 → 拉取数据 → 按方法论分析 → LLM 生成结论
+```
+
+但它们当前是「给 LLM 读的 Markdown 方法论 + 散落的 Python 脚本」，只能靠 agent 对话或 CLI 触发。本插件把它们统一成 **参数 schema + 图形表单**：
+
+- 每个 skill 声明一份参数 schema（输入类型 / 默认值）。
+- 侧边栏「投研工具」入口点开，**按 schema 自动渲染表单**（文本框 / 下拉框）。
+- 用户点「运行」，面板把参数拼成一条指令，通过 `session.prompt` 提交给 **DSH agent** 执行。
+- 可**新开会话**投递（默认），也可**发到当前会话**（表单内临时切换）。
+- agent 收到后匹配对应 skill，跑脚本拉数据、按方法论分析、LLM 生成结论，结果回显在会话流里。
+
+**关键点：没有实现新的 agent** —— 执行者就是 DSH 自己的 agent，面板只是「表单 + 一次 prompt 转发」。
+
+### 安装
+
+完全退出 DSH host 后执行：
+
+```powershell
+# 从 GitHub 安装（本仓库本身就是插件包）
+pnpm exec dsh plugin --profile web add github:tobykyzy001/advisor-agent
+
+# 或发布后从 npm 安装
+pnpm exec dsh plugin --profile web add advisor-agent
+```
+
+> `--profile web` 只在 `dsh plugin` 子命令里必需；日常启动仍是 `pnpm exec dsh web`。
+
+装完重启 DSH WebUI。入口：
+
+```
+左侧栏底部 → 投研工具
+设置 → 插件 → 投研工具（技能开关 / 默认投递目标）
+```
+
+### 已接入 skill
+
+| skill id | 面板名 | 参数 | 状态 |
+|---|---|---|---|
+| `stock-valuation` | 个股估值 | `symbol`（股票名或代码）、`market`（A/HK） | ✅ 首期 |
+
+### 配置项
+
+宿主侧配置（`cordis.patch.yml` 提供默认值，设置页可改）：
+
+| 字段 | 含义 | 默认 |
+|---|---|---|
+| `enabled` | 总开关：关闭后侧边栏不显示入口 | `true` |
+| `enabledSkills` | 启用的 skill id 列表 | `["stock-valuation"]` |
+| `defaultTarget` | 点「运行」默认投递目标：`new`(新开会话) / `current`(当前会话) | `new` |
+
+### 新增一个 skill
+
+1. 在 `lib/client.js` 顶部的 **`ADVISOR_SKILLS`（技能注册表）** 加一条对象：`{ id, label, description, params }`。
+2. （可选）在 `cordis.patch.yml` 的 `enabledSkills` 默认列表里补上该 id，让它默认启用。
+3. 确保 agent 侧能识别该 skill 并执行（复用 `.agents/skills/<skill-id>/` 的方法论）。
+
+> 注意：DSH 的 `/plugins/<id>/` 只伺服 `client.js` 一个 bundle，插件的其它静态文件不会被伺服，因此**技能注册表必须内联在 `lib/client.js`，不能走运行时 fetch**。增加技能只是改这一处数据，渲染 / 校验 / 指令拼装全部自动跟进。
+
+### 技术要点
+
+- 客户端 bundle 用 `window.__ModuleLoader__.load({ id, factory })` 注册，返回 `{ name, inject, apply(ctx) }`。
+- 两个槽位：`sidebar.footer.action`（侧边栏入口）+ `settings.plugin.item`（设置卡片）。配置走宿主 `/plugins/advisor-agent/config` 端点（GET/PATCH，本地回环校验）。
+- 投递：
+  - 新开会话：`ctx.get('workspaces').connectWorkspace(workspaceId)` 拿回已在 list 里的新 session id，再 `sessions.binding(id).session.prompt(...)`。
+  - 当前会话：`sessions.list.getSnapshot().current` → `sessions.binding(current).session.prompt(...)`。
+- `ADVISOR_SKILLS` 是 schema 驱动的通用表单**单一数据源**；渲染、必填校验、`buildInstruction` 都由它驱动。
+
+### 插件目录结构
+
+```
+（仓库根）
+├── package.json           # 插件 manifest：dsh.client（客户端依赖）+ dsh.bundle.patch
+├── cordis.patch.yml       # 宿主侧 patch：注册插件行及其配置
+├── src/index.js           # 宿主侧入口（node）：配置 schema + 本地 /config 端点
+└── lib/client.js          # 客户端 bundle：技能注册表 + 通用表单引擎 + 投递
+```
+
+---
+
+## 二、Python 研究与估值（量化核心）
+
+### 核心能力
 
 | 能力 | 模块 | 说明 |
 |------|------|------|
@@ -13,14 +104,14 @@
 | 选股 / 信号发现 | `analysis/screener.py` | 多因子估值评分与买入/观望/卖出信号 |
 | 组合管理与风控 | `portfolio/` | 建议仓位、单标的上限、现金缓冲、风控告警 |
 | 投顾知识库 | `knowledge/` | YAML 规则（估值/风控/策略），可检索引用 |
-| 估值方法 | `valuation/` | PE/PB/ROE/PEG、DDM、目标PE、相对估值 |
+| 估值方法 | `valuation/` | PE/PB/ROE/PEG、DDM、目标 PE、相对估值 |
 
-## 环境
+### 环境
 
 - Python ≥ 3.11（本仓库在 3.12 验证）
 - 可选的行情数据源：`akshare`（免费）；研报生成：任意 OpenAI 兼容接口
 
-## 快速开始
+### 快速开始
 
 ```bash
 # 1. 安装（建议先建虚拟环境）
@@ -41,40 +132,47 @@ print(r.screen[0].signal, r.report_text)
 PY
 ```
 
-## 目录结构
+### 目录结构
 
 ```
-quantify-agent/
+advisor-agent/
 ├── config/settings.yaml        # 主配置（估值/风控/数据源参数）
 ├── src/quantify/
 │   ├── config.py               # 配置加载（env > yaml > 默认值）
 │   ├── data/                   # 数据层：schema / fetcher / cache
-│   ├── valuation/              # 估值：metrics / DCF / 相对估值 / core汇总
-│   ├── knowledge/              # 投顾知识库：YAML规则 + 检索
+│   ├── valuation/              # 估值：metrics / DCF / 相对估值 / core 汇总
+│   ├── knowledge/              # 投顾知识库：YAML 规则 + 检索
 │   ├── analysis/               # 选股评分 / 信号 / 市场概览
 │   ├── portfolio/              # 配仓 / 风控
-│   ├── agent/                  # LLM抽象 / 编排 / 研报生成 / Markdown
+│   ├── agent/                  # LLM 抽象 / 编排 / 研报生成
 │   └── cli.py                  # 命令行入口
+├── src/index.js + lib/client.js  # DSH 插件源码（见「一、DSH 插件」）
+├── .agents/skills/             # skill 方法论（随仓库提交，方法不提交动态数据）
 ├── tests/                      # 单元测试
-├── notebooks/                  # 研究notebook
-└── output/reports/             # 生成的研报（已gitignore）
+└── output/reports/             # 生成的研报（已 gitignore）
 ```
 
-## 数据源说明
+### 数据源说明
 
 - `provider: akshare`（默认）：联网拉取实时行情；网络不可用或未安装时自动回退 `LocalProvider`（内置示例数据），保证离线可演示。
 - `provider: local`：强制使用示例数据。
 - 港股/更多财务字段可在 `data/fetcher.py` 的 `AkshareProvider` 中扩展映射。
 
-## 测试
+### 测试
 
 ```bash
 pytest
 ```
 
-## 后续扩展方向
+### 后续扩展方向
 
-- 接 real 财务数据（ROE 趋势、EPS 历史）完善 DCF 与 PEG 计算
+- 接入真实财务数据（ROE 趋势、EPS 历史）完善 DCF 与 PEG 计算
 - 增加历史 PE/PB 分位、行业对标
 - 组合级回撤/波动率监控与实时再平衡信号
 - Agent 多工具调用（检索、计算、复核）
+
+---
+
+## 许可
+
+[MIT](./LICENSE)
