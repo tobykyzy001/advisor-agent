@@ -11,6 +11,38 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+class DailyBar(BaseModel):
+    """单根日线 K 线（用于技术形态识别，如 W底/放量）。"""
+
+    date: date                                   # 交易日
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0                          # 成交量（股/手，口径由数据源保证一致）
+
+    @property
+    def is_up(self) -> bool:
+        """是否阳线（收盘 > 开盘）。"""
+        return self.close > self.open
+
+
+class DailySeries(BaseModel):
+    """一个标的按日期升序排列的日线序列。"""
+
+    symbol: str
+    market: str = "A"
+    bars: list[DailyBar] = Field(default_factory=list)
+
+    @property
+    def closes(self) -> list[float]:
+        return [b.close for b in self.bars]
+
+    @property
+    def lows(self) -> list[float]:
+        return [b.low for b in self.bars]
+
+
 class Quote(BaseModel):
     """单个标的最新行情快照。"""
 

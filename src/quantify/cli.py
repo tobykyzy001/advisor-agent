@@ -34,12 +34,22 @@ def main(argv: list[str] | None = None) -> None:
     p_copy.add_argument("--period-end", default=None, help="回测期末 YYYY-MM-DD")
     p_copy.add_argument("--out", default=None)
 
+    p_wb = sub.add_parser("w-bottom", help="观察仓 W底放量形态筛选（离线部分：读清单/出取数清单）")
+    p_wb.add_argument("--plan", action="store_true", help="输出观察仓清单与待取数清单")
+    p_wb.add_argument("--data", help="回填的日线 JSON 路径（{ts_code:[{trade_date,open,high,low,close,vol}]}）")
+    p_wb.add_argument("--watchlist", help="观察仓清单路径（默认 output/watchlist/watchlist.yaml）")
+    p_wb.add_argument("--lookback", type=int, default=30)
+    p_wb.add_argument("--trough-tol", type=float, default=0.03)
+    p_wb.add_argument("--ma-window", type=int, default=5)
+
     args = parser.parse_args(argv)
 
     if args.cmd == "research":
         _cmd_research(args)
     elif args.cmd == "copy":
         _cmd_copy(args)
+    elif args.cmd == "w-bottom":
+        _cmd_w_bottom(args)
 
 
 def _cmd_copy(args: argparse.Namespace) -> None:
@@ -60,6 +70,23 @@ def _cmd_copy(args: argparse.Namespace) -> None:
         cmd += ["--period-end", args.period_end]
     if args.out:
         cmd += ["--out", args.out]
+    result = subprocess.run(cmd)
+    raise SystemExit(result.returncode)
+
+
+def _cmd_w_bottom(args: argparse.Namespace) -> None:
+    """观察仓 W底筛选：转调 skill 的 screen.py（确定性部分，取数由 agent 调 tushare MCP）。"""
+    import subprocess
+    import sys as _sys
+    from pathlib import Path
+
+    script = Path(".agents/skills/w-bottom-screener/scripts/screen.py")
+    cmd = [_sys.executable, str(script)]
+    if args.plan:
+        cmd += ["--plan"]
+    if args.data:
+        cmd += ["--data", args.data, "--lookback", str(args.lookback),
+                "--trough-tol", str(args.trough_tol), "--ma-window", str(args.ma_window)]
     result = subprocess.run(cmd)
     raise SystemExit(result.returncode)
 
