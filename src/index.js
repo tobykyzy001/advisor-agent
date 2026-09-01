@@ -29,7 +29,7 @@ try {
 }
 
 // 默认启用的技能固定来自 lib/client.js 内联注册表 ADVISOR_SKILLS 的 id 集合；若丢失，用最小兜底。
-export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade']
+export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade', 'workspace-init']
 
 const defaults = Object.freeze({
   enabled: true,
