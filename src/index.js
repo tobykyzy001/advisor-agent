@@ -13,6 +13,8 @@
 //                  表单内可临时覆盖。
 
 import { createRequire } from 'node:module'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { createTushareMcpBridge } from './mcp-tushare.js'
 
 const require = createRequire(import.meta.url)
@@ -20,6 +22,10 @@ const require = createRequire(import.meta.url)
 export const name = 'advisor-agent'
 export const inject = ['settings']
 export const CONFIG_ENDPOINT = '/plugins/advisor-agent/config'
+// workspace-init 脚本的静态下载端点：脚本随包分发（src/workspace-init/init_workspace.py 在 files 内），
+// 供目标工作区里的 agent 在运行时下载后执行。纯插件安装（无仓库 .agents/skills）也能拿到脚本。
+export const ASSET_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/init_workspace.py'
+const ASSET_PATH = fileURLToPath(new URL('./workspace-init/init_workspace.py', import.meta.url))
 
 let Schema = null
 try {
@@ -147,6 +153,37 @@ export function createConfigHandler(settings) {
   }
 }
 
+// workspace-init 脚本的静态下载端点：仅回环、仅 GET，返回随包分发的 init_workspace.py 原文。
+export function createAssetHandler() {
+  const cached = (() => {
+    try {
+      return readFileSync(ASSET_PATH, 'utf8')
+    } catch (e) {
+      return null
+    }
+  })()
+  return async (req, res) => {
+    if (!isLoopback(req.socket?.remoteAddress)) {
+      jsonResponse(res, 403, { error: 'local access only' })
+      return
+    }
+    if (req.method !== 'GET') {
+      jsonResponse(res, 405, { error: 'method not allowed' })
+      return
+    }
+    if (cached === null) {
+      jsonResponse(res, 404, { error: 'asset not found: workspace-init/init_workspace.py' })
+      return
+    }
+    res.writeHead(200, {
+      'content-type': 'text/x-python; charset=utf-8',
+      'cache-control': 'no-store',
+      'content-length': Buffer.byteLength(cached),
+    })
+    res.end(cached)
+  }
+}
+
 function mount(ctx, config = {}) {
   const logger = ctx.logger ?? console
   const base = publicConfig(config)
@@ -165,6 +202,14 @@ function mount(ctx, config = {}) {
           handler: createConfigHandler(settings),
         }),
         'advisor-agent: local config endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: ASSET_ENDPOINT,
+          handler: createAssetHandler(),
+        }),
+        'advisor-agent: workspace-init asset endpoint',
       )
     })
     // 在 tools 语境下建 tushare MCP 连接桥，并在 URL 变化时热切换（立即生效）。

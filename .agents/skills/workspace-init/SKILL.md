@@ -1,6 +1,6 @@
 ---
 name: workspace-init
-description: 工作区初始化技能。当用户要在「一个空目录 / 新目录」从零搭建一套可运行的投资顾问工作区目录树时触发——一次性生成三大工具（抄作业 / 个股分析 / W底搜索）以及持仓、观察仓、个股知识库、知识更新状态等运行时目录骨架，并写入各清单的模板文件。核心：一键运行 `scripts/init_workspace.py` 全量生成（不逐模块交互），幂等可重复执行。
+description: 工作区初始化技能。当用户要在「一个空目录 / 新目录」从零搭建一套可运行的投资顾问工作区目录树时触发——一次性生成抄作业 copy-trade（output/copy-trade/）、个股分析 stock-valuation（output/reports/）、W底搜索 w-bottom-screener（output/w-bottom/ + output/watchlist/）这三大技能所需的运行目录，以及持仓（portfolio-tracker）、个股知识库（knowledge/）、知识更新状态（daily-update）等骨架，并写入各清单的模板文件。核心：一键运行 `scripts/init_workspace.py` 全量生成（不逐模块交互），幂等可重复执行。
 ---
 
 # 工作区初始化（Workspace Init）
@@ -51,16 +51,22 @@ description: 工作区初始化技能。当用户要在「一个空目录 / 新�
 
 ## 使用
 
+脚本唯一真源在 **`src/workspace-init/init_workspace.py`**（随插件包分发），真实逻辑只改这一份。
+
 ```bash
 # 在当前目录初始化
-python .agents/skills/workspace-init/scripts/init_workspace.py
+python src/workspace-init/init_workspace.py
 
 # 在指定空目录初始化（推荐：全新项目骨架）
-python .agents/skills/workspace-init/scripts/init_workspace.py --target D:/my-advisor
+python src/workspace-init/init_workspace.py --target D:/my-advisor
 
 # 先看会做什么，不落地
-python .agents/skills/workspace-init/scripts/init_workspace.py --target D:/my-advisor --dry-run
+python src/workspace-init/init_workspace.py --target D:/my-advisor --dry-run
 ```
+
+**插件安装环境下**（无本仓库源码）：脚本由宿主静态端点分发，URL 为
+`http://127.0.0.1:<port>/plugins/advisor-agent/assets/workspace-init/init_workspace.py`，
+agent 下载后执行即可；客户端投递的指令会带上该地址。
 
 ## 幂等与安全
 
@@ -81,10 +87,10 @@ python .agents/skills/workspace-init/scripts/init_workspace.py --target D:/my-ad
 
 ## 生成数据 vs 技能方法（提交边界）
 
-- **提交**：本技能本身（`SKILL.md` + `scripts/init_workspace.py`），以及脚本里内置的**模板内容**（都是方法/结构约定，不含个人数据）。
+- **提交**：本技能本身（`SKILL.md`），以及真正的脚本真源 `src/workspace-init/init_workspace.py` 与其中内置的**模板内容**（都是方法/结构约定，不含个人数据）。
 - **不提交**：脚本在目标目录**生成出来的产物**（`output/`、`knowledge/stocks/` 下回填后的文件、README 里用户手写内容）。这些是运行时/个人数据，生成的 `.gitignore` 已将其排除——**尤其当目标目录本身就是本仓库时**（此时 `output/` 会被仓库已有的 `.gitignore` 忽略）。
 
-> 注意：本仓库 `.agents/skills/workspace-init/` 是「脚本本身」，随仓库提交；而用它 `--target` 指向**本仓库根目录/任意目录**产出的 `output/` 结构是「运行时产物」，不入库。
+> 注意：`src/workspace-init/init_workspace.py` 是「脚本本身」随插件包分发。用它 `--target` 指向**本仓库根目录/任意目录**产出的 `output/` 结构是「运行时产物」，不入库。
 
 ## 免责
 
