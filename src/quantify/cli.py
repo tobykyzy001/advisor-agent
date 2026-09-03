@@ -75,13 +75,15 @@ def _cmd_copy(args: argparse.Namespace) -> None:
 
 
 def _cmd_w_bottom(args: argparse.Namespace) -> None:
-    """观察仓 W底筛选：转调 skill 的 screen.py（确定性部分，取数由 agent 调 tushare MCP）。"""
+    """观察仓 W底筛选：转调自包含脚本 w_bottom_screen.py（确定性部分，取数由 agent 调 tushare MCP）。"""
     import subprocess
     import sys as _sys
     from pathlib import Path
 
-    script = Path(".agents/skills/w-bottom-screener/scripts/screen.py")
+    script = Path("src/workspace-init/w_bottom_screen.py")
     cmd = [_sys.executable, str(script)]
+    if args.watchlist:
+        cmd += ["--watchlist", args.watchlist]
     if args.plan:
         cmd += ["--plan"]
     if args.data:

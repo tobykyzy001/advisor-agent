@@ -1,5 +1,6 @@
 """W底 + 放量识别算法、观察仓清单、tushare 适配的单元测试。"""
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -123,19 +124,21 @@ def test_rows_to_series_sorting_and_dirty():
     assert s.bars[0].date.isoformat() == "2025-01-09"  # 升序
 
 
-def test_watchlist_roundtrip(tmp_path):
-    p = tmp_path / "watchlist.yaml"
+def test_watchlist_roundtrip():
+    p = Path(".tmp") / "test_watchlist_roundtrip.yaml"
+    p.parent.mkdir(parents=True, exist_ok=True)
     items = [WatchItem(ts_code="600519.SH", name="贵州茅台", market="A", note="x")]
     save_watchlist(items, p)
     got = load_watchlist(p)
+    p.unlink(missing_ok=True)
     assert len(got) == 1
     assert got[0].ts_code == "600519.SH"
     assert got[0].name == "贵州茅台"
 
 
-def test_watchlist_missing_file_raises(tmp_path):
+def test_watchlist_missing_file_raises():
     """清单文件缺失时应抛 FileNotFoundError（模板真源归 workspace-init，不自动生成）。"""
-    p = tmp_path / "watchlist.yaml"
+    p = Path(".tmp") / "__nonexistent_watchlist__.yaml"
     with pytest.raises(FileNotFoundError):
         load_watchlist(p)
 

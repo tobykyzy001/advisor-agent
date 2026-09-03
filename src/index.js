@@ -26,6 +26,10 @@ export const CONFIG_ENDPOINT = '/plugins/advisor-agent/config'
 // 供目标工作区里的 agent 在运行时下载后执行。纯插件安装（无仓库 .agents/skills）也能拿到脚本。
 export const ASSET_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/init_workspace.py'
 const ASSET_PATH = fileURLToPath(new URL('./workspace-init/init_workspace.py', import.meta.url))
+// W底筛选自包含脚本的静态分发端点（与 workspace-init 同模式）：
+// 纯标准库、零 quantify 依赖，目标工作区 agent 下载后直接 python 运行。
+export const WB_SCREEN_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/w_bottom_screen.py'
+const WB_SCREEN_PATH = fileURLToPath(new URL('./workspace-init/w_bottom_screen.py', import.meta.url))
 
 let Schema = null
 try {
@@ -153,11 +157,11 @@ export function createConfigHandler(settings) {
   }
 }
 
-// workspace-init 脚本的静态下载端点：仅回环、仅 GET，返回随包分发的 init_workspace.py 原文。
-export function createAssetHandler() {
+// 静态脚本下载端点（泛化）：仅回环、仅 GET，返回随包分发的 Python 脚本原文。
+function makeAssetHandler(filePath, label) {
   const cached = (() => {
     try {
-      return readFileSync(ASSET_PATH, 'utf8')
+      return readFileSync(filePath, 'utf8')
     } catch (e) {
       return null
     }
@@ -172,7 +176,7 @@ export function createAssetHandler() {
       return
     }
     if (cached === null) {
-      jsonResponse(res, 404, { error: 'asset not found: workspace-init/init_workspace.py' })
+      jsonResponse(res, 404, { error: `asset not found: ${label}` })
       return
     }
     res.writeHead(200, {
@@ -207,9 +211,17 @@ function mount(ctx, config = {}) {
         () => httpCtx.webServer.register({
           kind: 'exact',
           path: ASSET_ENDPOINT,
-          handler: createAssetHandler(),
+          handler: makeAssetHandler(ASSET_PATH, 'workspace-init/init_workspace.py'),
         }),
         'advisor-agent: workspace-init asset endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: WB_SCREEN_ENDPOINT,
+          handler: makeAssetHandler(WB_SCREEN_PATH, 'workspace-init/w_bottom_screen.py'),
+        }),
+        'advisor-agent: w-bottom-screener asset endpoint',
       )
     })
     // 在 tools 语境下建 tushare MCP 连接桥，并在 URL 变化时热切换（立即生效）。

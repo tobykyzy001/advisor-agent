@@ -12,4 +12,7 @@
         enabled: true
         enabledSkills:
           - stock-valuation
+          - copy-trade
+          - workspace-init
+          - w-bottom-screener
         defaultTarget: new

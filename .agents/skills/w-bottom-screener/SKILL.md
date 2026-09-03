@@ -44,11 +44,16 @@ description: 观察仓「W底 + 放量」形态筛选技能。当用户要求「
 ### 第 1 步：读观察仓 + 待取数清单
 
 ```bash
-python .agents/skills/w-bottom-screener/scripts/screen.py --plan
+python src/workspace-init/w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml --plan
 ```
 
+> 脚本 `w_bottom_screen.py` 是**自包含单文件**（纯标准库、零 quantify 依赖），随插件包 `src/` 分发、
+> 由宿主静态端点 `/plugins/advisor-agent/assets/workspace-init/w_bottom_screen.py` 提供下载；也可在
+> advisor-agent 仓库内直接 `python src/workspace-init/w_bottom_screen.py` 运行（等价于
+> `python -m quantify.cli w-bottom --plan`）。
+
 - 观察仓清单在 `output/watchlist/watchlist.yaml`（已被 gitignore，不入库，属个人关注信息）。
-- 首启自动生成模板（含 600519.SH 示例），用户可自行增删。
+- 清单模板由 `workspace-init` 技能生成（`init_workspace.py` 的 WATCHLIST_YAML 是唯一模板真源），本技能只读不写。
 
 ### 第 2 步：agent 会话内取数
 
@@ -63,7 +68,7 @@ python .agents/skills/w-bottom-screener/scripts/screen.py --plan
 ### 第 3 步：形态判定 + 出报告
 
 ```bash
-python .agents/skills/w-bottom-screener/scripts/screen.py --data output/w-bottom/quotes.json
+python src/workspace-init/w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml --data output/w-bottom/quotes.json
 ```
 
 输出 `output/w-bottom/screen_<时间戳>.md`：命中标的表格（代码/名称/左底/右底/确认日/量比）+ 逐只形态说明。
@@ -77,7 +82,7 @@ python .agents/skills/w-bottom-screener/scripts/screen.py --data output/w-bottom
 
 ## 生成数据 vs 技能方法（提交边界）
 
-- **提交**：本技能（SKILL.md + scripts/）与形态口径方法论。
+- **提交**：本技能（SKILL.md，方法论）+ 脚本真源 `src/workspace-init/w_bottom_screen.py`（自包含算法，随插件包分发）。
 - **不提交**：`output/watchlist/`（观察仓清单，含个人关注信息）、`output/w-bottom/`（取数缓存与筛选报告），均已 gitignore。
 
 ## 免责
