@@ -38,6 +38,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -77,6 +79,41 @@ def normalize_url(raw: str) -> str:
     if raw.upper().startswith("BV"):
         return f"https://www.bilibili.com/video/{raw}"
     return raw
+
+
+# ── 退出码约定（与 setup_runtime.py 对齐，供 agent 串联判断） ──
+EXIT_READY = 0
+EXIT_DEPS_MISSING = 1
+EXIT_PYTHON_MISSING = 2
+
+
+def probe_system_python() -> str | None:
+    """探测系统里可用的 Python 解释器，返回可执行名或 None（不创建、不安装）。
+
+    这是「是否需用户处置」的判定依据：无可用解释器即 python_missing，
+    脚本直接上报，绝不做自动安装/兜底。
+    """
+    candidates: list[str] = [sys.executable]
+    if sys.platform == "win32":
+        candidates += ["py", "python", "python3"]
+    else:
+        candidates += ["python3", "python"]
+
+    seen: set[str] = set()
+    for c in candidates:
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        resolved = shutil.which(c) if (c != "py" and not Path(c).is_file()) else c
+        if not resolved:
+            continue
+        probe = subprocess.run(
+            [resolved, "-c", "import sys"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        if probe.returncode == 0:
+            return resolved
+    return None
 
 
 def check_dependencies() -> dict[str, str]:
@@ -185,23 +222,38 @@ def main() -> None:
     os.environ.setdefault("HF_HOME", str(Path(args.models).resolve()))
 
     if args.selfcheck:
+        # 三分法：先判定系统 Python，再判定依赖，给出确定性退出码与指引。
+        #   python_missing → exit 2（需用户装 Python，非插件问题）
+        #   deps_missing   → exit 1（插件可自动修：跑 setup_runtime.py）
+        #   ready          → exit 0
+        py = probe_system_python()
+        if py is None:
+            print(json.dumps({
+                "status": "python_missing",
+                "hint": (
+                    "未检测到可用的 Python 解释器，这是环境问题、不是插件问题，需用户处置："
+                    "请安装完整版 CPython 3.11+（勾选 Add to PATH）后重试；脚本不会自动装 Python。"
+                ),
+            }, ensure_ascii=False, indent=2))
+            sys.exit(EXIT_PYTHON_MISSING)
+
         deps = check_dependencies()
         ok = all(v == "ok" for v in [deps["yt_dlp"], deps["faster_whisper"]])
-        hint = ""
-        if not ok:
-            hint = (
-                "依赖未就绪：请先用 workspace-init 的 setup_runtime.py 建工作区 .venv 并装依赖"
-                "（python setup_runtime.py --target <工作区>），再用 .venv/Scripts/python.exe 运行本脚本。"
-            )
         print(json.dumps({
+            "status": "ready" if ok else "deps_missing",
+            "python": py,
             "deps": deps,
             "hf_endpoint": os.environ.get("HF_ENDPOINT"),
             "hf_home": os.environ.get("HF_HOME"),
             "models_dir_exists": Path(args.models).resolve().is_dir(),
             "ready": ok,
-            "hint": hint,
+            "hint": "" if ok else (
+                "依赖未就绪（Python 可用、缺 yt-dlp/faster-whisper）：这是插件可自动修复的步骤，"
+                "运行 workspace-init 的 setup_runtime.py --target <工作区> 建 .venv 并装依赖后，"
+                "再用 .venv/Scripts/python.exe 运行本脚本。"
+            ),
         }, ensure_ascii=False, indent=2))
-        sys.exit(0 if ok else 1)
+        sys.exit(EXIT_READY if ok else EXIT_DEPS_MISSING)
 
     if not args.video:
         parser.error("缺少视频参数：请传 B站视频 URL / BV 号 / b23.tv 短链")

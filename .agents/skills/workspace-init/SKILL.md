@@ -75,7 +75,8 @@ python src/workspace-init/setup_runtime.py --target D:/my-advisor
 
 - **目录无脑补建**：`mkdir -p`，已存在不报错。
 - **模板只补不覆盖**：目标文件已存在则跳过并提示，绝不覆盖用户已回填的持仓/观察仓/知识库内容。
-- **纯标准库**：只依赖 `pathlib` / `argparse`，不依赖本仓库 quantify 包，可拷到任意机器单独运行；目标目录也不要求是 git 仓库(仍会生成 `.gitignore` 备用)。
+- **纯标准库**：`init_workspace.py` 只依赖 `pathlib` / `argparse`；`setup_runtime.py` 只依赖 `os/sys/subprocess/shutil/pathlib/argparse`，两者都不依赖本仓库 quantify 包，可拷到任意机器单独运行；目标目录也不要求是 git 仓库(仍会生成 `.gitignore` 备用)。
+- **Python 边界（重要）**：`setup_runtime.py` 只负责建 `.venv` + 装第三方依赖，**不负责安装 Python 解释器本身**。检测到系统无可用 Python 时输出 `python_missing`、以退出码 2 停下，提示用户安装完整版 CPython 3.11+（勾选 Add to PATH）——这是「非插件问题」，需用户确认处置，脚本不做任何自动安装/兜底。装依赖失败（网络/编译/磁盘）同理：报错停下、等用户处置，不换路径硬来。
 
 ## 与其它技能的分工
 
@@ -88,7 +89,7 @@ python src/workspace-init/setup_runtime.py --target D:/my-advisor
   - 景气行业快照 → `prosperity-analysis`（写 `output/sectors/`）
   - 知识更新周期 → `daily-update`（读/写 `output/skill-state/update-manifest.yaml`）
   - 个股知识沉淀 → 本技能生成的 `knowledge/`（后续由 agent 按 `stock-valuation` 输出格式回填单票文件）
-  - B站视频总结 → `bili-video-summary`（读/写 `output/videos/`；**其运行环境（.venv + yt-dlp/faster-whisper）由本技能的 `setup_runtime.py` 准备**）
+  - B站视频总结 → `bili-video-summary`（读/写 `output/videos/`；**其运行环境（.venv + yt-dlp/faster-whisper）由本技能的 `setup_runtime.py` 准备**；Python 解释器本身是用户环境前提，缺失时由 setup_runtime 报 `python_missing` 交用户处置，非插件问题）
 
 ## 生成数据 vs 技能方法（提交边界）
 

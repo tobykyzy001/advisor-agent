@@ -42,7 +42,11 @@ description: B站视频的「拉取→转录→分析」流水线。当用户发
 
 - **模型缓存收拢到工作区**：`workspace-init` 生成的骨架里已有 `output/videos/models/` 目录，专用于收拢 whisper 模型。若想固定模型位置（而非走 faster-whisper 默认的 `~/.cache/huggingface`），在运行脚本前设置环境变量 `HF_HOME=<工作区>/output/videos/models`（脚本内 `HF_ENDPOINT` / `HF_HUB_DISABLE_XET` 已内置，无需重复设）。首次无模型则自动从 `hf-mirror.com` 下载，「有模型就直接用、没有才下载」。
 - **幂等**：脚本按 BV 号建目录 `output/videos/<BV号>/`，若 `transcript.txt` 已存在会**跳过转录直接复用**（`--force` 可强制重跑）；音频 `audio.*` 同理复用。因此对同一视频重复投递不会重复下载/转录。
-- **依赖检查**：跑脚本前先确认工作区 `.venv` 已装 `yt-dlp` 与 `faster-whisper`（`.venv/Scripts/python.exe scripts/transcribe_video.py --selfcheck` 看 `ready`）。缺则由 workspace-init 的 `setup_runtime.py` 建 `.venv` 并装依赖，本技能不自行装环境。
+- **依赖检查（三分法门禁）**：跑脚本前先 `.venv/Scripts/python.exe scripts/transcribe_video.py --selfcheck` 判定，按 `status` 分支：
+  - `python_missing`（退出码 2，系统无可用 Python）——**这是「非插件问题」**：停下，提示用户安装完整版 CPython 3.11+（勾选 Add to PATH）后自行重试；**不得自动装 Python、不得换路径兜底**。
+  - `deps_missing`（退出码 1）——插件可自动修复：由 workspace-init 的 `setup_runtime.py --target <工作区>` 建 `.venv` 装 yt-dlp/faster-whisper，装完重跑 `--selfcheck` 至 ready。
+  - `ready`（退出码 0）——直接跑转录。
+  - 装依赖失败（网络/编译/磁盘）也是**非插件问题**：停下，把脚本打印的原因转告用户、等用户确认后再重试，不 monkeypatch、不 `--target` 临时目录。
 
 ## 分析流程
 
