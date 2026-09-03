@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -388,3 +389,199 @@ def test_load_quotes_empty_dir_fails(tmp_path):
     """目录下没有任何分片 → FileNotFoundError（视为未取数）。"""
     with pytest.raises(FileNotFoundError):
         load_quotes(tmp_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 大盘状态关开关（--market-guard）：下行默认冻结，可关闭照常选股（端到端）
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _decline_rebound_rows(n: int, d0: date = date(2024, 1, 1)) -> list[dict]:
+    """构造「大盘下行但个股仍合格」的确定性行情：先平缓 → 中段尖峰 → 深跌 → 尾盘温和反弹。
+
+    收盘曲线：60 根 100 → 10 根 108（尖峰）→ 50 根 88 → 10 根 86→95 温和反弹。
+    验证口径（n=130 时）：mom60 = 95/108-1 ≈ -12%（< -5%，大盘判 down）；
+    MA120 ≈ 94.875 < 收盘价 95（趋势关过）；偏离 MA20 ≈ 6.4%、近 5 日涨幅 ≈ 5.6%（反追高关过）。
+    """
+    closes = [100.0] * 60 + [108.0] * 10 + [88.0] * 50 + [86.0 + i for i in range(10)]
+    assert len(closes) == n, "本用例固定 130 根窗口"
+    return [_bar(d0 + timedelta(days=i), c) for i, c in enumerate(closes)]
+
+
+def _run_strategy(tmp_path, extra_args: list[str]):
+    """以「3 只同形态合格股 + 老仓 OLD.SH」跑一轮完整策略，返回 (rc, 回写后的 state)。"""
+    codes = ["N1.SH", "N2.SH", "OLD.SH"]
+    watchlist = tmp_path / "watchlist.yaml"
+    watchlist.write_text(
+        "\n".join(f"- ts_code: {c}\n  name: 测试" for c in codes) + "\n", encoding="utf-8"
+    )
+    rows = _decline_rebound_rows(130)
+    quotes = tmp_path / "quotes.json"
+    quotes.write_text(json.dumps({c: rows for c in codes}), encoding="utf-8")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({
+        "as_of": "2024-06-01", "cash_pct": 0.875, "signal": "signal", "regime": "up",
+        "target": ["OLD.SH"], "positions": [{"ts_code": "OLD.SH", "weight": 0.125}],
+    }), encoding="utf-8")
+    rc = m.main([
+        "--watchlist", str(watchlist), "--state", str(state), "--data", str(quotes),
+        "--no-store",  # 既有用例隔离本地行情库，保持纯 JSON 全量语义
+        *extra_args,
+    ])
+    return rc, json.loads(state.read_text(encoding="utf-8"))
+
+
+def test_market_guard_default_freezes_on_down(tmp_path):
+    """默认开启：大盘下行 → signal=frozen，目标持仓只剩老仓，不新增。"""
+    rc, state = _run_strategy(tmp_path, [])
+    assert rc == 0
+    assert state["regime"] == "down"          # 前提：行情确属下行
+    assert state["signal"] == "frozen"
+    assert state["target"] == ["OLD.SH"]      # 冻结新增，老仓原样保留
+
+
+def test_market_guard_off_runs_on_down(tmp_path):
+    """--market-guard false：大盘仍判 down，但照常选股出新组合（老仓缓冲照常生效）。"""
+    rc, state = _run_strategy(tmp_path, ["--market-guard", "false"])
+    assert rc == 0
+    assert state["regime"] == "down"          # 状态照常计算展示
+    assert state["signal"] == "signal"
+    assert set(state["target"]) == {"N1.SH", "N2.SH", "OLD.SH"}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 本地 CSV 行情库（增量取数 + 幂等合并）：store_status / upsert_store / 全流程
+# ─────────────────────────────────────────────────────────────────────────
+
+store_status = m.store_status
+upsert_store = m.upsert_store
+
+
+def test_store_status_missing(tmp_path):
+    """库内无此标的 → (0, None)。"""
+    assert store_status(tmp_path, "A.SH") == (0, None)
+
+
+def test_upsert_store_creates_csv_and_merges(tmp_path):
+    """首批增量：新建 CSV（含表头、按日期升序），merged 回读全量，回执提示入库。"""
+    raw = {"A.SH": [_bar(date(2025, 1, 2), 1.5), _bar(date(2025, 1, 3), 1.6)]}
+    merged, notes = upsert_store(tmp_path, raw)
+    fp = tmp_path / "A.SH.csv"
+    assert fp.exists()
+    assert fp.read_text(encoding="utf-8").splitlines()[0] == "trade_date,open,high,low,close,vol"
+    assert [r["trade_date"] for r in merged["A.SH"]] == ["20250102", "20250103"]
+    assert store_status(tmp_path, "A.SH") == (2, "20250103")
+    assert any("入库" in n for n in notes)
+
+
+def test_upsert_store_idempotent(tmp_path):
+    """幂等：同批增量重复合并 → 行数不变、文件字节一致、无新回执。"""
+    raw = {"A.SH": [_bar(date(2025, 1, 2), 1.5), _bar(date(2025, 1, 3), 1.6)]}
+    upsert_store(tmp_path, raw)
+    first = (tmp_path / "A.SH.csv").read_text(encoding="utf-8")
+    merged, notes = upsert_store(tmp_path, raw)
+    assert (tmp_path / "A.SH.csv").read_text(encoding="utf-8") == first
+    assert len(merged["A.SH"]) == 2
+    assert store_status(tmp_path, "A.SH") == (2, "20250103")
+    assert notes == []
+
+
+def test_upsert_store_increment_and_overwrite(tmp_path):
+    """增量合并：新日期追加、同日新值覆盖旧值。"""
+    upsert_store(tmp_path, {"A.SH": [_bar(date(2025, 1, 2), 1.5)]})
+    inc = [
+        {"trade_date": "20250102", "close": 9.9, "open": 9.0, "high": 9.0,
+         "low": 9.0, "vol": 999},                       # 同日覆盖
+        _bar(date(2025, 1, 3), 1.6),                    # 新增
+    ]
+    merged, _ = upsert_store(tmp_path, {"A.SH": inc})
+    rows = merged["A.SH"]
+    assert [r["trade_date"] for r in rows] == ["20250102", "20250103"]
+    assert rows[0]["close"] == 9.9
+    assert store_status(tmp_path, "A.SH") == (2, "20250103")
+
+
+def _write_watchlist(tmp_path, codes) -> Path:
+    wl = tmp_path / "watchlist.yaml"
+    wl.write_text("\n".join(f"- ts_code: {c}\n  name: 测试" for c in codes) + "\n",
+                  encoding="utf-8")
+    return wl
+
+
+def test_plan_incremental_full_and_fresh(tmp_path, capsys):
+    """--plan 按库内状态把标的分为：增量补数（带显式区间）/ 全量 / 免取。"""
+    codes = ["OLD.SH", "NEW.SH", "FRESH.SH"]
+    wl = _write_watchlist(tmp_path, codes)
+    store = tmp_path / "store"
+    # OLD.SH：121 根老数据 → 增量，start = 最后日期(2024-04-30) +1
+    upsert_store(store, {"OLD.SH": [_bar(date(2024, 1, 1) + timedelta(days=i), 100.0)
+                                    for i in range(121)]})
+    # FRESH.SH：121 根且末根是今天 → 免取
+    today = date.today()
+    upsert_store(store, {"FRESH.SH": [_bar(today - timedelta(days=(120 - i)), 100.0)
+                                      for i in range(121)]})
+    rc = m.main(["--watchlist", str(wl), "--plan", "--store", str(store)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "增量补数 1 只 / 全量 1 只 / 库内已最新免取 1 只" in out
+    assert "ts_code=OLD.SH start_date=20240501" in out
+    assert "ts_code=NEW.SH（全量" in out
+    assert "FRESH.SH" in out.split("免取")[0] or "FRESH.SH" in out
+
+
+def test_plan_all_fresh_no_fetch(tmp_path, capsys):
+    """全部免取：--plan 提示无需取数。"""
+    wl = _write_watchlist(tmp_path, ["F1.SH"])
+    store = tmp_path / "store"
+    today = date.today()
+    upsert_store(store, {"F1.SH": [_bar(today - timedelta(days=(120 - i)), 100.0)
+                                   for i in range(121)]})
+    rc = m.main(["--watchlist", str(wl), "--plan", "--store", str(store)])
+    assert rc == 0
+    assert "无需取数" in capsys.readouterr().out
+
+
+def test_e2e_store_roundtrip_increment(tmp_path):
+    """端到端：首轮全量落库 → 二轮只喂一根新 K 线 → 库 +1 行、信号日滚到新日期。"""
+    codes = ["N1.SH", "N2.SH", "N3.SH"]
+    watchlist = _write_watchlist(tmp_path, codes)
+    store = tmp_path / "store"
+    state = tmp_path / "state.json"
+    rows = _decline_rebound_rows(130)   # 2024-01-01 起 130 根，末日 2024-05-09
+    quotes = tmp_path / "quotes.json"
+    quotes.write_text(json.dumps({c: rows for c in codes}), encoding="utf-8")
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
+                 "--data", str(quotes), "--store", str(store)])
+    assert rc == 0
+    for c in codes:
+        assert store_status(store, c) == (130, "20240509")
+
+    inc = tmp_path / "inc.json"
+    inc.write_text(json.dumps({c: [_bar(date(2024, 5, 10), 96.0)] for c in codes}),
+                   encoding="utf-8")
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
+                 "--data", str(inc), "--store", str(store)])
+    assert rc == 0
+    assert store_status(store, "N1.SH") == (131, "20240510")
+    st = json.loads(state.read_text(encoding="utf-8"))
+    assert st["as_of"] == "2024-05-10"
+
+
+def test_e2e_fresh_codes_join_via_store(tmp_path):
+    """「免取」标的不出现在增量分片里，也应从行情库回读参与计算，不静默缺席。"""
+    codes = ["F1.SH", "F2.SH"]
+    watchlist = _write_watchlist(tmp_path, codes)
+    store = tmp_path / "store"
+    today = date.today()
+    # 两只库内均已最新（130 根、末根=今天）→ --plan 会判「免取」，增量分片为空 {}
+    rows = [_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)]
+    upsert_store(store, {c: rows for c in codes})
+    inc = tmp_path / "inc.json"
+    inc.write_text("{}", encoding="utf-8")
+    state = tmp_path / "state.json"
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
+                 "--data", str(inc), "--store", str(store)])
+    assert rc == 0
+    st = json.loads(state.read_text(encoding="utf-8"))
+    assert st["as_of"] == today.isoformat()   # 库内末根即今天
+    assert set(st["target"]) == set(codes)    # 两只都参与选股（温和上涨全合格）

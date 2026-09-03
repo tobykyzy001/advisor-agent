@@ -38,6 +38,7 @@ description: 中期动量轮动选股技能。当用户要求「给观察股票�
 | 大盘状态关 | 池内 mom60 **中位数**：≥ +5% 上行 / ≤ −5% 下行 / 之间震荡 | 下行时**冻结新增**（老仓保留不清仓） |
 
 > 大盘状态用「池内全部股票 mom60 的中位数」，不是市场指数——是这池股票自己的整体表现。
+> 大盘状态关可用 `--market-guard false` **临时关闭**：下行状态下也照常选股出组合——大盘状态仍照常计算并写进报告/状态供人工判断风险（默认 true 开启；面板表单里「大盘状态关」选「关」即透传此开关）。
 
 ### 3. 选股顺序（严格五步）
 
@@ -69,8 +70,12 @@ description: 中期动量轮动选股技能。当用户要求「给观察股票�
 - **只用 tushare MCP** 取日线：`mcp__tushareMcp__daily`（历史日K，无频率限制）。历史窗口取 121 交易日以上，建议 `start_date` 取 today−250 覆盖 mom120/MA120。
 - **无 MCP 直接拒绝运行**：会话内无 `mcp__tushareMcp__daily` 工具、或未在投研工具设置卡片填 tushare MCP 地址时，**本功能不可用**，直接报错提示用户先配置，**不得回退 akshare、不写 tushare SDK 直连**。
 - 取数字段保留：`trade_date / open / high / low / close / vol`，时点标注数据更新时间。
+- **本地 CSV 行情库**（与 w-bottom-screener 共享）：`output/quotes-store/<ts_code>.csv`，每只一份、
+  越攒越厚。`--plan` 依据库内最后交易日把标的分成**增量补数（只取「最后日期+1→今天」）/ 全量
+  （新票或库内不足 history_min 根）/ 免取（已最新）**；`--data` 把增量按 trade_date 幂等合并写回后
+  用库内全量历史计算——二次运行通常每天只差几根 K 线。`--no-store` 可整体关闭退回旧行为。
 
-## 总流程（分片多 agent 取数 + 落盘旁路，面板与直连同构）
+## 总流程（增量行情库 + 分片多 agent 取数 + 落盘旁路，面板与直连同构）
 
 > 脚本 `momentum_strategy.py` 自包含单文件（纯标准库、零 quantify 依赖），随插件包 `src/` 分发、
 > 由宿主静态端点 `/plugins/advisor-agent/assets/workspace-init/momentum_strategy.py` 提供下载。
@@ -92,21 +97,26 @@ token 直接翻倍且会话必爆、串行 80+ 次调用也极慢。因此：
 python scripts/momentum_strategy.py --watchlist output/watchlist/watchlist.yaml --plan
 ```
 
-- 输出为**单片**（小池子）时：主会话逐只调 `mcp__tushareMcp__daily`（start_date 不晚于 today−250），
+- `--plan` 会对照本地行情库给每只标注**取数区间**：增量（`start_date=<最后日期+1> end_date=<今天>`）
+  或全量（新票/库内不足 121 根，`start_date` 不晚于 today−250）；库内已最新的直接「免取」。
+  后续取数**严格按区间执行**。
+- 输出为**单片**（小池子）时：主会话按区间逐只调 `mcp__tushareMcp__daily`，
   整理成 JSON 写到 `output/momentum/quotes.json`，格式 `{"<ts_code>": [{trade_date,open,high,low,close,vol}, ...]}`。
-- 输出为**分片**（大池子）时：**先清空** `output/momentum/quotes/` 目录（防上轮残留混入），
-  然后对每个分片派一个 subagent 并行执行：
+- 输出为**分片**（大池子）时：对每个分片派一个 subagent 并行执行（**无需清空 quotes 目录**：
+  `--data` 按 trade_date 幂等合并，残留分片重复合并不产生副作用）：
 
-  > 子代理任务模板：「对 ts_code 清单 <片内清单> 每只调 mcp__tushareMcp__daily 取近 250 交易日日线
-  > （start_date 不晚于 today−250），字段保留 trade_date/open/high/low/close/vol，整理为
-  > `{"<ts_code>": [...]}` 的 JSON，用写文件工具原样写入 `output/momentum/quotes/shard_<k>.json`。
+  > 子代理任务模板：「对 ts_code 清单 <片内清单+各自 start/end> 按标注区间逐只调
+  > mcp__tushareMcp__daily（增量票只取尾巴；全量票 start_date 不晚于 today−250），字段保留
+  > trade_date/open/high/low/close/vol，整理为 `{"<ts_code>": [...]}` 的 JSON，用写文件工具原样写入
+  > `output/momentum/quotes/shard_<k>.json`。
   > 行情数据不得出现在你的回复中；回复只需一行：`shard <k>：完成 x/y，失败 [...]`。
   > 若本会话（含子代理）无 mcp__tushareMcp__daily 工具，回执 `shard <k>：无 MCP`，不得编造行情。」
 
   主 agent 只收集各片回执；某片失败/无 MCP 时重派一次，仍失败则在报告中标注缺口（覆盖率关卡会 fail-closed）。
 
 ```bash
-# 第 2 步：分析（--data 单片传文件、分片传目录，脚本自动合并全部 *.json）
+# 第 2 步：分析（--data 单片传文件、分片传目录：脚本自动合并全部 *.json、按日期幂等写回
+# output/quotes-store/，再用库内全量历史计算；全部免取时放一个空 JSON 分片 {} 即可）
 python scripts/momentum_strategy.py \
   --watchlist output/watchlist/watchlist.yaml \
   --state output/momentum/state.json \
@@ -142,7 +152,8 @@ python scripts/momentum_strategy.py \
 ## 生成数据 vs 技能方法（提交边界）
 
 - **提交**：本技能（SKILL.md，方法论）+ 脚本真源 `src/workspace-init/momentum_strategy.py`（自包含算法，随插件包分发）。
-- **不提交**：`output/watchlist/`（观察仓清单，个人关注信息）、`output/momentum/`（取数缓存、组合报告、持仓状态），均已 gitignore。
+- **不提交**：`output/watchlist/`（观察仓清单，个人关注信息）、`output/momentum/`（取数缓存、组合报告、持仓状态）、
+  `output/quotes-store/`（本地 CSV 行情库，运行时数据），均已 gitignore。
 
 ## 免责
 
@@ -167,3 +178,4 @@ python scripts/momentum_strategy.py \
 | `coverage-min` | 0.95 | 覆盖率下限 |
 | `history-min` | 121 | 最低历史交易日 |
 | `hold-on-empty` | true | 兜底保留老仓（false 全退现金） |
+| `market-guard` | true | 大盘状态关（false 关闭：下行也照常选股，大盘状态仍照常计算展示） |

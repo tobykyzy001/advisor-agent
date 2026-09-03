@@ -9,22 +9,30 @@ agent 下载执行（与 workspace-init/init_workspace.py 同一分发模式）�
 - 不依赖本仓库 quantify 包，可拷贝到任意工作区单独运行。
 - 脚本本身**不调 tushare MCP**（MCP 只在 agent 会话内可用）；取数由 agent 完成并回填 JSON。
 
+本地 CSV 行情库（增量取数 + 幂等合并，与 momentum_strategy.py 共享 output/quotes-store/）：
+- 每只标的一份 CSV：output/quotes-store/<ts_code>.csv，列 trade_date,open,high,low,close,vol。
+- --plan 先查库内每只的最后交易日：只需补「最后日期+1 → 今天」的尾巴（新票/库内历史不足
+  lookback 的才全量取近 ~30 交易日）；库内已是最新的标的直接免取。
+- --data 把取回的增量 JSON 按 trade_date 与库内 CSV 去重合并（新行覆盖同日旧行），写回 CSV
+  后用合并后的全量历史判定形态。**幂等**：同一批增量重复合并结果不变，重跑无副作用。
+- --no-store 可整体关闭行情库，退回「全量取数、不落库」的旧行为。
+
 三层式工作流（三段式，与 copy-trade 一致）：
  1) python w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml --plan
-        —— 打印观察仓标的清单 + 待取数清单（含每只 ts_code）。
+        —— 打印观察仓标的清单 + 待取数清单（库内已有的只取增量区间）。
         池子大于 --shard-size（默认 10 只）时自动按分片打印，也可用 --shards N 显式指定片数。
  2) agent 取数（行情数据体积大，禁止进入主会话上下文）：
-    - 小池子（单片）：主会话逐只调 mcp__tushareMcp__daily 取近 ~30 交易日，
+    - 小池子（单片）：主会话逐只调 mcp__tushareMcp__daily 按 --plan 给的区间取日线，
       整理成 JSON，写到 output/w-bottom/quotes.json，格式：
         {"600519.SH": [{"trade_date":"20250102","open":..,"high":..,"low":..,"close":..,"vol":..}, ...], ...}
     - 大池子（分片）：每个分片派一个独立子代理（subagent）并行取数，子代理把本片 JSON
       直接写到 output/w-bottom/quotes/shard_<k>.json（不同写同一文件），主会话只收一行回执。
-      取数前先清空 quotes 目录，避免上轮残留分片混入。
+      分片无需清空：--data 按 trade_date 幂等合并，残留分片重复合并不产生副作用。
  3) python w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml \
         --data output/w-bottom/quotes.json     # 单片小池子
     python w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml \
         --data output/w-bottom/quotes          # 分片目录（合并全部 *.json）
-        —— 跑形态判定，输出命中报告 output/w-bottom/screen_<时间戳>.md。
+        —— 增量先合并写回行情库，再跑形态判定，输出命中报告 output/w-bottom/screen_<时间戳>.md。
 
 形态口径（可选参数调整）：
 - lookback=30      回看交易日数
@@ -37,11 +45,12 @@ agent 下载执行（与 workspace-init/init_workspace.py 同一分发模式）�
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -355,12 +364,102 @@ def load_quotes(data_path: Path) -> tuple[dict[str, list], list[str]]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 本地 CSV 行情库（每标的一份，增量合并，幂等）
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: CSV 列固定：与 --plan 提示的取数字段一致，momentum_strategy.py 共用同一库结构
+CSV_FIELDS = ["trade_date", "open", "high", "low", "close", "vol"]
+
+
+def store_csv_path(store_dir: Path, ts_code: str) -> Path:
+    """库内某标的的 CSV 路径（文件名即 ts_code）。"""
+    return store_dir / f"{ts_code}.csv"
+
+
+def _read_store_rows(fp: Path) -> list[dict]:
+    """读一份 CSV 为 dict 行（只保留 CSV_FIELDS 中存在的非空字段）。"""
+    rows: list[dict] = []
+    with fp.open("r", encoding="utf-8", newline="") as f:
+        for r in csv.DictReader(f):
+            td = (r.get("trade_date") or "").strip()
+            if not td:
+                continue
+            row = {"trade_date": td}
+            for k in CSV_FIELDS[1:]:
+                v = (r.get(k) or "").strip()
+                if v:
+                    row[k] = v
+            rows.append(row)
+    return rows
+
+
+def store_status(store_dir: Path, ts_code: str) -> tuple[int, str | None]:
+    """库内该标的的 (行数, 最后交易日)；无文件或空文件返回 (0, None)。"""
+    fp = store_csv_path(store_dir, ts_code)
+    if not fp.exists():
+        return 0, None
+    rows = _read_store_rows(fp)
+    if not rows:
+        return 0, None
+    return len(rows), max(r["trade_date"] for r in rows)
+
+
+def _next_date_str(trade_date: str) -> str:
+    """'20250201'/'2025-02-01' → 次日 '20250202'（解析失败则原样返回）。"""
+    d = _to_date(trade_date)
+    if d is None:
+        return trade_date
+    return (d + timedelta(days=1)).strftime("%Y%m%d")
+
+
+def upsert_store(store_dir: Path, raw: dict[str, list]) -> tuple[dict[str, list], list[str]]:
+    """把增量行情合并进 CSV 库并写回，返回 {ts_code: 全量行（按日期升序）}。
+
+    按 trade_date 去重、新行覆盖同日旧行——幂等：同一批增量重复合并结果不变。
+    raw 中出现的 ts_code 都会回读库内全量（增量为空的标的至少保留库内历史）；
+    仅当出现新日期或新建文件时才真正写盘。
+    """
+    merged: dict[str, list] = {}
+    notes: list[str] = []
+    for ts, rows in raw.items():
+        fp = store_csv_path(store_dir, ts)
+        by_date: dict[str, dict] = {}
+        if fp.exists():
+            for r in _read_store_rows(fp):
+                by_date[r["trade_date"]] = r
+        before = len(by_date)
+        for row in rows or []:
+            td = str(row.get("trade_date", "")).strip()
+            if not td:
+                continue
+            rec = {"trade_date": td}
+            for k in CSV_FIELDS[1:]:
+                if k in row and row[k] is not None:
+                    rec[k] = row[k]
+            by_date[td] = rec
+        dates = sorted(by_date)
+        if len(by_date) > before or not fp.exists():
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            with fp.open("w", encoding="utf-8", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+                w.writeheader()
+                for d in dates:
+                    w.writerow(by_date[d])
+        merged[ts] = [by_date[d] for d in dates]
+        added = len(by_date) - before
+        if added:
+            notes.append(f"{ts} 入库 {added} 根新 K 线（累计 {len(by_date)} 根）→ {fp}")
+    return merged, notes
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 两步子命令：--plan（列清单）/ --data（判形态出报告）
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 def _plan(watchlist_path: Path, shards: int | None = None,
-          shard_size: int = SHARD_SIZE_DEFAULT) -> None:
+          shard_size: int = SHARD_SIZE_DEFAULT, store_dir: Path | None = None,
+          lookback: int = 30) -> None:
     try:
         items = load_watchlist(watchlist_path)
     except FileNotFoundError as e:
@@ -376,13 +475,55 @@ def _plan(watchlist_path: Path, shards: int | None = None,
     print()
 
     codes = [it.ts_code for it in items]
-    groups = shard_groups(codes, shards, shard_size)
+    today = date.today().strftime("%Y%m%d")
+
+    # 依据本地行情库把标的分成三类：增量（只补尾巴）/ 全量（新票或库内历史不足）/ 免取（已最新）
+    fetch_ranges: dict[str, tuple[str, str]] = {}   # ts_code → (start_date, end_date) 增量区间
+    full_codes: list[str] = []                      # 需全量取近 ~lookback 交易日的 ts_code
+    fresh_codes: list[str] = []                     # 库内已是今天最新，本次免取
+    if store_dir is not None:
+        print(f"本地行情库：{store_dir}（每只一份 CSV，增量合并；--data 自动写回）")
+        for code in codes:
+            n, last = store_status(store_dir, code)
+            if n >= lookback and last:
+                start = _next_date_str(last)
+                if start > today:
+                    fresh_codes.append(code)
+                else:
+                    fetch_ranges[code] = (start, today)
+            else:
+                full_codes.append(code)
+        print(f"  增量补数 {len(fetch_ranges)} 只 / 全量 {len(full_codes)} 只"
+              f" / 库内已最新免取 {len(fresh_codes)} 只")
+        if fresh_codes:
+            print(f"  免取（已最新）：{' '.join(fresh_codes)}")
+        print()
+    else:
+        full_codes = list(codes)
+
+    to_fetch = [c for c in codes if c in fetch_ranges] + [c for c in codes if c in full_codes]
+    if not to_fetch:
+        print("全部标的库内均已最新，无需取数。直接运行 --data 合并出库判定即可：")
+        print("  python w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml")
+        print("      --data output/w-bottom/quotes")
+        print("  （quotes 目录放任意空 JSON 分片即可，如 shard_1.json 写 {}）")
+        return
+
+    groups = shard_groups(to_fetch, shards, shard_size)
+
+    def _range_hint(code: str) -> str:
+        """单只标的的取数区间提示：增量带显式区间，全量带回看窗口说明。"""
+        if code in fetch_ranges:
+            s, e = fetch_ranges[code]
+            return f"ts_code={code} start_date={s} end_date={e}（增量）"
+        return f"ts_code={code}（全量：取近 ~{lookback * 2} 自然日内的日线，end_date={today}）"
 
     if len(groups) <= 1:
         # 小池子：单片直取（数据量可控，主会话一次取齐）
-        print("池子较小（单片），主会话逐只调用 mcp__tushareMcp__daily 取近 ~30 交易日日线：")
-        for code in codes:
-            print(f"  ts_code={code}")
+        print("池子较小（单片），主会话逐只调用 mcp__tushareMcp__daily 按下面区间取日线")
+        print(f"（全量标的需覆盖 lookback={lookback} 交易日回看窗口；今天={today}）：")
+        for code in to_fetch:
+            print(f"  {_range_hint(code)}")
         print()
         print("取数字段保留：trade_date, open, high, low, close, vol。")
         print("整理成 JSON 保存为 output/w-bottom/quotes.json，格式：")
@@ -393,22 +534,26 @@ def _plan(watchlist_path: Path, shards: int | None = None,
     # 大池子：分片模式，多 agent 并行取数 + 落盘旁路，行情数据不进主会话
     print(f"池子较大，分 {len(groups)} 片取数（每片 {len(groups[0])} 只左右）。取数纪律：")
     print("- 行情数据体积大，禁止进入主会话上下文（不回显、不粘贴、不汇总明细）。")
-    print("- 取数前先清空 output/w-bottom/quotes/ 目录，避免上轮残留分片混入。")
-    print("- 每个分片派一个独立子代理（subagent）并行取数：子代理对片内每只 ts_code 调")
-    print("  mcp__tushareMcp__daily 取近 ~30 交易日日线，字段保留 trade_date/open/high/low/close/vol，")
-    print("  把本片 JSON 直接写入对应分片文件；回复主会话只需一行回执（如「shard 1：完成 10/10，")
-    print("  失败 []」），不得粘贴行情。")
+    print("- 无需清空 output/w-bottom/quotes/ 目录：--data 按 trade_date 幂等合并，")
+    print("  残留分片重复合并不产生副作用。")
+    print("- 每个分片派一个独立子代理（subagent）并行取数：子代理对片内每只 ts_code 按")
+    print("  下方标注的区间调 mcp__tushareMcp__daily，字段保留 trade_date/open/high/low/")
+    print("  close/vol，把本片 JSON 直接写入对应分片文件；回复主会话只需一行回执")
+    print("  （如「shard 1：完成 10/10，失败 []」），不得粘贴行情。")
     print()
     for k, grp in enumerate(groups, 1):
         print(f"shard {k}/{len(groups)} → output/w-bottom/quotes/shard_{k}.json"
-              f"（{len(grp)} 只）：{' '.join(grp)}")
+              f"（{len(grp)} 只）：")
+        for code in grp:
+            print(f"  {_range_hint(code)}")
     print()
-    print("全部分片回齐后运行（--data 指向目录，脚本自动合并全部 *.json 分片）：")
+    print("全部分片回齐后运行（--data 指向目录：合并全部 *.json 分片并写回行情库）：")
     print("  python w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml")
     print("      --data output/w-bottom/quotes")
 
 
-def _data(watchlist_path: Path, data_path: Path, params: WBottomParams) -> int:
+def _data(watchlist_path: Path, data_path: Path, params: WBottomParams,
+          store_dir: Path | None = None) -> int:
     try:
         raw, merge_notes = load_quotes(data_path)
     except FileNotFoundError as e:
@@ -420,6 +565,30 @@ def _data(watchlist_path: Path, data_path: Path, params: WBottomParams) -> int:
         return 1
     for note in merge_notes:
         print(f"[merge] {note}")
+
+    if store_dir is not None:
+        try:
+            pool_codes = [it.ts_code for it in load_watchlist(watchlist_path)]
+        except FileNotFoundError:
+            pool_codes = []
+        today = date.today().strftime("%Y%m%d")
+        for c in pool_codes:
+            if c in raw:
+                continue
+            n, last = store_status(store_dir, c)
+            # --plan 判定「免取」（库内已最新）的标的：回读库内历史参与判定；
+            # 其余缺席视为取数缺漏，不进 raw，避免拿陈旧数据误出形态
+            if last and n >= params.lookback and _next_date_str(last) > today:
+                raw[c] = []
+        # 增量合并写回本地 CSV 行情库（幂等），随后用库内全量历史判定形态
+        try:
+            raw, store_notes = upsert_store(store_dir, raw)
+        except OSError as e:
+            print(f"[error] 行情库写回失败：{e}")
+            return 1
+        for note in store_notes:
+            print(f"[store] {note}")
+
     if not raw:
         print("数据为空（所有分片均无标的），请先完成取数。")
         return 1
@@ -476,6 +645,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--shard-size", type=int, default=SHARD_SIZE_DEFAULT,
                     help=f"每片标的数（默认 {SHARD_SIZE_DEFAULT}），配合 --plan 自动分片")
     ap.add_argument("--data", help="回填的日线 JSON 路径（单文件），或分片目录（合并目录下全部 *.json）")
+    ap.add_argument("--store", default="output/quotes-store",
+                    help="本地 CSV 行情库目录（默认 output/quotes-store，两技能共享）："
+                         "--plan 依据库内最后交易日只取增量，--data 增量合并写回后用全量判定")
+    ap.add_argument("--no-store", action="store_true",
+                    help="禁用本地行情库：--plan 全量取数、--data 不写回（旧行为）")
     ap.add_argument("--lookback", type=int, default=30)
     ap.add_argument("--trough-tol", type=float, default=0.03)
     ap.add_argument("--confirm-window", type=int, default=3)
@@ -483,8 +657,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--anchor-window", type=int, default=5)
     args = ap.parse_args(argv)
 
+    store_dir = None if args.no_store else Path(args.store)
+
     if args.plan:
-        _plan(Path(args.watchlist), shards=args.shards, shard_size=args.shard_size)
+        _plan(Path(args.watchlist), shards=args.shards, shard_size=args.shard_size,
+              store_dir=store_dir, lookback=args.lookback)
         return 0
     if args.data:
         params = WBottomParams(
@@ -494,7 +671,7 @@ def main(argv: list[str] | None = None) -> int:
             ma_window=args.ma_window,
             anchor_window=args.anchor_window,
         )
-        return _data(Path(args.watchlist), Path(args.data), params)
+        return _data(Path(args.watchlist), Path(args.data), params, store_dir=store_dir)
     ap.print_help()
     return 0
 
