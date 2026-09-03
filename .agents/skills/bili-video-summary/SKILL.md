@@ -31,9 +31,15 @@ python .agents/skills/bili-video-summary/scripts/transcribe_video.py "<视频URL
 2. **HuggingFace 国内不可达**：自动切 `hf-mirror.com` 镜像。
 3. **Xet 协议绕过镜像**：自动禁用（Xet 会绕过镜像直连官方 CAS 服务器，同样会被拦）。
 
-首次运行会下载 whisper 模型（small 约 460MB，之后有缓存）。
+首次运行会下载 whisper 模型（small 约 460MB，之后有缓存，且支持 `--model` 切换）。
 
 缺依赖时提示用户：`pip install yt-dlp faster-whisper`（可选 `opencc-python-reimplemented`，装了会自动把繁体转简）。
+
+## 模型缓存与幂等（投研工具面板投递时同样适用）
+
+- **模型缓存收拢到工作区**：`workspace-init` 生成的骨架里已有 `output/videos/models/` 目录，专用于收拢 whisper 模型。若想固定模型位置（而非走 faster-whisper 默认的 `~/.cache/huggingface`），在运行脚本前设置环境变量 `HF_HOME=<工作区>/output/videos/models`（脚本内 `HF_ENDPOINT` / `HF_HUB_DISABLE_XET` 已内置，无需重复设）。首次无模型则自动从 `hf-mirror.com` 下载，「有模型就直接用、没有才下载」。
+- **幂等**：脚本按 BV 号建目录 `output/videos/<BV号>/`，若 `transcript.txt` 已存在会**跳过转录直接复用**（`--force` 可强制重跑）；音频 `audio.*` 同理复用。因此对同一视频重复投递不会重复下载/转录。
+- **依赖检查**：跑脚本前先确认目标 python 环境已装 `yt-dlp` 与 `faster-whisper`，缺则先 `pip install`（普通环境，非项目 `.venv`）。
 
 ## 分析流程
 

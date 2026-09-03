@@ -57,6 +57,7 @@ pnpm exec dsh plugin --profile web add advisor-agent
 | `copy-trade` | 抄作业分析 | `url`（作业链接）、`html`（本地文件，可选） | ✅ |
 | `workspace-init` | 初始化工作区 | `target`（目标目录） | ✅ |
 | `w-bottom-screener` | 观察仓 W底筛选 | `lookback`、`trough_tol`（可选） | ✅ |
+| `bili-video-summary` | B站视频总结 | `video`（链接/BV号） | ✅ |
 
 ### 配置项
 
@@ -65,7 +66,7 @@ pnpm exec dsh plugin --profile web add advisor-agent
 | 字段 | 含义 | 默认 |
 |---|---|---|
 | `enabled` | 总开关：关闭后侧边栏不显示入口 | `true` |
-| `enabledSkills` | 启用的 skill id 列表 | `["stock-valuation","copy-trade","workspace-init","w-bottom-screener"]` |
+| `enabledSkills` | 启用的 skill id 列表 | `["stock-valuation","copy-trade","workspace-init","w-bottom-screener","bili-video-summary"]` |
 | `defaultTarget` | 点「运行」默认投递目标：`new`(新开会话) / `current`(当前会话) | `new` |
 
 ### 新增一个 skill
@@ -74,7 +75,7 @@ pnpm exec dsh plugin --profile web add advisor-agent
 2. （可选）在 `cordis.patch.yml` 的 `enabledSkills` 默认列表里补上该 id，让它默认启用。
 3. 决定该 skill 的**执行方式**，二选一：
    - **普通 skill**：确保 agent 侧能识别该 skill 并执行（复用 `.agents/skills/<skill-id>/` 的方法论）。走 `buildInstruction` 的通用分支 `请调用 skill「…」`。
-   - **自包含脚本型 skill**（如 `workspace-init`、`w-bottom-screener`）：脚本纯标准库、随插件 `src/` 分发，通过宿主静态端点 `makeAssetHandler` 伺服；在 `buildInstruction` 里为它写**确定性指令分支**（下载脚本 → python 跑 → 汇报），不依赖目标工作区里存在 `.agents/skills` 或 quantify 包。
+   - **自包含脚本型 skill**（如 `workspace-init`、`w-bottom-screener`、`bili-video-summary`）：脚本随插件 `src/` 分发，通过宿主静态端点 `makeAssetHandler` 伺服；在 `buildInstruction` 里为它写**确定性指令分支**（下载脚本 → python 跑 → 汇报），不依赖目标工作区里存在 `.agents/skills` 或 quantify 包。其中 `workspace-init`/`w-bottom-screener`/`momentum-rotation` 是**纯标准库**脚本；`bili-video-summary` 依赖 `yt-dlp + faster-whisper`（联网下音频 + 离线转录），脚本内置依赖自检（`--selfcheck`）、模型缓存收拢到 `output/videos/models/`（`--models`）与幂等（已有文字稿跳过转录），非纯标准库但同样自包含分发、无需 skill。
 
 > 注意：DSH 的 `/plugins/<id>/` 只伺服 `client.js` 一个 bundle，插件的其它静态文件**不会自动被伺服**——除了 `src/index.js` 里显式用 `makeAssetHandler` 注册的资产端点。技能注册表必须内联在 `lib/client.js`，不能走运行时 fetch；自包含脚本则要**同时**（a）放进 `src/` 随包分发、（b）在 `src/index.js` 注册静态端点、（c）在 `buildInstruction` 写下载+运行的确定性指令。增加/调整技能只是改这几处，渲染 / 校验 / 指令拼装全部自动跟进。
 

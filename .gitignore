@@ -24,6 +24,9 @@ data/cache/
 # ---- Outputs ----
 output/
 
+# ---- 临时调试产物 ----
+.tmp/
+
 # ---- 观察仓 / W底筛选运行时产物（个人关注信息） ----
 output/watchlist/
 output/w-bottom/

@@ -35,6 +35,8 @@ README_MD = """\
 | 抄作业（copy-trade） | `output/copy-trade/` | 作业回测产物：原始HTML、解析消息流、回测报告、别名覆盖 |
 | 个股分析（stock-valuation） | `output/reports/` | 个股估值研报（`research_*.md`） |
 | W底搜索（w-bottom-screener） | `output/w-bottom/` | W底筛选取数缓存与命中报告 |
+| 中期动量轮动（momentum-rotation） | `output/momentum/` | 动量排名取数缓存、组合信号报告、持仓状态 |
+| B站视频总结（bili-video-summary） | `output/videos/` | 视频转录产物：文字稿 / 元数据 / 音频 / whisper 模型缓存 |
 | 观察仓 | `output/watchlist/` | 观察仓标的池清单（W底筛选的输入） |
 | 持仓（portfolio-tracker） | `output/portfolio/` | 持仓清单 `holdings.yaml` |
 | 个股知识库 | `knowledge/` | 清单索引 + 每票一份分析文件（长期沉淀） |
@@ -174,8 +176,10 @@ DIRS = [
     "output/sectors",
     "output/skill-state",
     "output/videos",
+    "output/videos/models",
     "output/watchlist",
     "output/w-bottom",
+    "output/momentum",
     "knowledge",
     "knowledge/stocks",
 ]
