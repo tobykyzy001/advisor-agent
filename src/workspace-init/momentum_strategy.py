@@ -60,11 +60,18 @@ fail-closed（数据安全）：
 两层式工作流（三段式，与 copy-trade / w-bottom-screener 一致）：
  1) python momentum_strategy.py --watchlist output/watchlist/watchlist.yaml --plan
         —— 打印观察仓标的清单 + 待取数清单（含每只 ts_code、需要的交易日窗口）。
- 2) agent 在会话内对每只标的调用 mcp__tushareMcp__daily，取 不早于 start_date 的日线，
-    整理成 JSON 写到 output/momentum/quotes.json，格式：
+        池子大于 --shard-size（默认 10 只）时自动按分片打印，也可用 --shards N 显式指定片数。
+ 2) agent 取数（行情数据体积大，禁止进入主会话上下文）：
+    - 小池子（单片）：主会话逐只调 mcp__tushareMcp__daily 取不早于 start_date 的日线，
+      整理成 JSON 写到 output/momentum/quotes.json，格式：
         {"600519.SH": [{"trade_date":"20250102","open":..,"high":..,"low":..,"close":..,"vol":..}, ...], ...}
+    - 大池子（分片）：每个分片派一个独立子代理（subagent）并行取数，子代理把本片 JSON
+      直接写到 output/momentum/quotes/shard_<k>.json（不同写同一文件），主会话只收一行回执。
+      取数前先清空 quotes 目录，避免上轮残留分片混入。
  3) python momentum_strategy.py --watchlist output/watchlist/watchlist.yaml \
-        --state output/momentum/state.json --data output/momentum/quotes.json
+        --state output/momentum/state.json --data output/momentum/quotes.json   # 单片小池子
+    python momentum_strategy.py --watchlist output/watchlist/watchlist.yaml \
+        --state output/momentum/state.json --data output/momentum/quotes   # 分片目录模式
         —— 跑选股排名/过滤/调仓，产出组合信号与持仓（T 日收盘价成交），
            并回写持仓状态 state.json；报告落在 output/momentum/plan_<时间戳>.md。
 
@@ -435,11 +442,74 @@ def save_state(path: Path, state: dict) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 分片取数（大池子多 agent 并行）与行情载入
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: 每个取数分片的默认标的数：单片 MCP 取数上下文控制在子代理可承受范围内
+SHARD_SIZE_DEFAULT = 10
+
+
+def shard_groups(codes: list[str], shards: int | None = None,
+                 shard_size: int = SHARD_SIZE_DEFAULT) -> list[list[str]]:
+    """把 ts_code 清单切成若干片。
+
+    指定 shards（片数）时按片数均分；否则按 shard_size（每片只数）切。
+    保持原清单顺序，保证各片子代理取数范围确定、互不重叠。
+    """
+    if not codes:
+        return []
+    if shards and shards > 0:
+        size = max(1, -(-len(codes) // shards))  # 向上取整
+    else:
+        size = max(1, shard_size)
+    return [codes[i:i + size] for i in range(0, len(codes), size)]
+
+
+def load_quotes(data_path: Path) -> tuple[dict[str, list], list[str]]:
+    """读取回填行情：单个 JSON 文件，或一个目录（合并目录下全部 *.json 分片）。
+
+    目录模式用于多 agent 分片并行取数：每个子代理把本分片写到 quotes/shard_<k>.json，
+    本函数按文件名排序逐片合并；同一 ts_code 跨片重复时保留行数较多者。
+    返回 (raw, notes)：raw 为 {ts_code: [bar, ...]}，notes 为合并提示（重复/覆盖等）。
+    文件坏 JSON / 顶层非 dict 直接抛 ValueError（指明文件名，便于重派该分片）。
+    """
+    if not data_path.exists():
+        raise FileNotFoundError(str(data_path))
+    files = [data_path] if data_path.is_file() else sorted(data_path.glob("*.json"))
+    if not files:
+        raise FileNotFoundError(f"目录下没有任何 .json 分片：{data_path}")
+
+    raw: dict[str, list] = {}
+    notes: list[str] = []
+    for fp in files:
+        try:
+            chunk = json.loads(fp.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"分片文件不是合法 JSON：{fp}（{e}）") from e
+        if not isinstance(chunk, dict):
+            raise ValueError(f"分片文件顶层必须是 {{\"ts_code\": [...]}} 的对象：{fp}")
+        for ts, rows in chunk.items():
+            if not isinstance(rows, list):
+                notes.append(f"{ts} 在 {fp.name} 中的数据不是数组，已跳过")
+                continue
+            if ts in raw:
+                if len(rows) > len(raw[ts]):
+                    notes.append(f"{ts} 在 {fp.name} 重复出现，保留行数较多者（{len(rows)} 行）")
+                    raw[ts] = rows
+                else:
+                    notes.append(f"{ts} 在 {fp.name} 重复出现，已跳过（保留先出现的 {len(raw[ts])} 行）")
+            else:
+                raw[ts] = rows
+    return raw, notes
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 主流程（--plan / --data）
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _plan(watchlist_path: Path) -> int:
+def _plan(watchlist_path: Path, shards: int | None = None,
+          shard_size: int = SHARD_SIZE_DEFAULT) -> int:
     try:
         items = load_watchlist(watchlist_path)
     except FileNotFoundError as e:
@@ -452,26 +522,62 @@ def _plan(watchlist_path: Path) -> int:
     for it in items:
         print(f"  - {it.ts_code}\t{it.name}\t{it.market}\t{it.note}")
     print()
-    print("请对以下 ts_code 逐只调用 mcp__tushareMcp__daily（start_date 应不晚于 today-250，")
-    print("以覆盖 mom120=120 与 MA120=120 的历史窗口）：")
-    for it in items:
-        print(f"  ts_code={it.ts_code}")
+
+    codes = [it.ts_code for it in items]
+    groups = shard_groups(codes, shards, shard_size)
+
+    if len(groups) <= 1:
+        # 小池子：单片直取（数据量可控，主会话一次取齐）
+        print("池子较小（单片），主会话逐只调用 mcp__tushareMcp__daily 取近 250 交易日日线")
+        print("（start_date 应不晚于 today-250，以覆盖 mom120=120 与 MA120=120 的历史窗口）：")
+        for code in codes:
+            print(f"  ts_code={code}")
+        print()
+        print("取数字段保留：trade_date, open, high, low, close, vol。")
+        print("整理成 JSON 保存为 output/momentum/quotes.json，格式：")
+        print('  {"600519.SH": [{"trade_date":"20250102","open":..,"high":..,')
+        print('                "low":..,"close":..,"vol":..}, ...], ...}')
+        print()
+        print("完成后运行：")
+        print("  python momentum_strategy.py --watchlist output/watchlist/watchlist.yaml")
+        print("      --state output/momentum/state.json --data output/momentum/quotes.json")
+        return 0
+
+    # 大池子：分片模式，多 agent 并行取数 + 落盘旁路，行情数据不进主会话
+    print(f"池子较大，分 {len(groups)} 片取数（每片 {len(groups[0])} 只左右）。取数纪律：")
+    print("- 行情数据体积大，禁止进入主会话上下文（不回显、不粘贴、不汇总明细）。")
+    print("- 取数前先清空 output/momentum/quotes/ 目录，避免上轮残留分片混入。")
+    print("- 每个分片派一个独立子代理（subagent）并行取数：子代理对片内每只 ts_code 调")
+    print("  mcp__tushareMcp__daily 取近 250 交易日日线（start_date 不晚于 today-250），")
+    print("  字段保留 trade_date/open/high/low/close/vol，把本片 JSON 直接写入对应分片文件；")
+    print("  回复主会话只需一行回执（如「shard 1：完成 10/10，失败 []」），不得粘贴行情。")
     print()
-    print("取数字段保留：trade_date, open, high, low, close, vol。")
-    print("整理成 JSON 保存为 output/momentum/quotes.json，格式：")
-    print('  {"600519.SH": [{"trade_date":"20250102","open":..,"high":..,"low":..,"close":..,"vol":..}, ...], ...}')
+    for k, grp in enumerate(groups, 1):
+        print(f"shard {k}/{len(groups)} → output/momentum/quotes/shard_{k}.json"
+              f"（{len(grp)} 只）：{' '.join(grp)}")
     print()
-    print("完成后运行：")
-    print("  python momentum_strategy.py --watchlist output/watchlist/watchlist.yaml --state output/momentum/state.json --data output/momentum/quotes.json")
+    print("全部分片回齐后运行（--data 指向目录，脚本自动合并全部 *.json 分片）：")
+    print("  python momentum_strategy.py --watchlist output/watchlist/watchlist.yaml")
+    print("      --state output/momentum/state.json --data output/momentum/quotes")
     return 0
 
 
 def _data(watchlist_path: Path, data_path: Path, state_path: Path | None, p: StrategyParams,
           write_plan: bool = True) -> int:
-    if not data_path.exists():
-        print(f"数据文件不存在：{data_path}，请先完成取数（--plan 后按提示回填）。")
+    try:
+        raw, merge_notes = load_quotes(data_path)
+    except FileNotFoundError as e:
+        print(f"数据不存在：{e}，请先完成取数（--plan 后按提示回填）。")
         return 1
-    raw = json.loads(data_path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        print(f"[error] {e}")
+        print("请重新取数补全该分片后再运行。")
+        return 1
+    for note in merge_notes:
+        print(f"[merge] {note}")
+    if not raw:
+        print("数据为空（所有分片均无标的），请先完成取数。")
+        return 1
 
     name_map: dict[str, str] = {}
     try:
@@ -624,7 +730,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--watchlist", default="output/watchlist/watchlist.yaml",
                     help="观察仓标的池 YAML 路径")
     ap.add_argument("--plan", action="store_true", help="输出观察仓清单与待取数清单")
-    ap.add_argument("--data", help="回填的日线 JSON 路径")
+    ap.add_argument("--shards", type=int, default=None,
+                    help="取数分片数（仅 --plan 有效）；缺省时池子超过 --shard-size 只自动分片")
+    ap.add_argument("--shard-size", type=int, default=SHARD_SIZE_DEFAULT,
+                    help=f"每片标的数（默认 {SHARD_SIZE_DEFAULT}），配合 --plan 自动分片")
+    ap.add_argument("--data", help="回填的日线 JSON 路径（单文件），或分片目录（合并目录下全部 *.json）")
     ap.add_argument("--state", default=None, help="持仓状态 JSON 路径（默认同名 .state.json）")
     ap.add_argument("--max-positions", type=int, default=8)
     ap.add_argument("--win-short", type=int, default=20)
@@ -649,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
     write_plan = os.getenv("STRATEGY_MOMENTUM_DECISION_MODE", "").strip() != "decision_runs"
 
     if args.plan:
-        return _plan(Path(args.watchlist))
+        return _plan(Path(args.watchlist), shards=args.shards, shard_size=args.shard_size)
 
     if args.data:
         p = StrategyParams(

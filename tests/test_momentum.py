@@ -314,3 +314,77 @@ def test_rows_to_series_close_required():
     """缺 close 的行（即使其它 OHLC 全）也应被跳过——收盘价是策略硬依赖。"""
     s = rows_to_series("H.SH", [{"trade_date": "20250101", "open": 10, "high": 11, "low": 9, "vol": 100}])
     assert len(s.bars) == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 分片取数（大池子多 agent 并行）：shard_groups / load_quotes
+# ─────────────────────────────────────────────────────────────────────────
+
+shard_groups = m.shard_groups
+load_quotes = m.load_quotes
+
+
+def test_shard_groups_default_size():
+    """82 只按默认每片 10 只 → 9 片，末片 2 只，顺序与池子一致。"""
+    codes = [f"{i:06d}.SH" for i in range(82)]
+    groups = shard_groups(codes)
+    assert len(groups) == 9
+    assert groups[0] == codes[:10]
+    assert groups[-1] == codes[-2:]
+
+
+def test_shard_groups_explicit_shards():
+    """显式指定片数 → 按片数均分（向上取整）。"""
+    codes = [str(i) for i in range(10)]
+    assert shard_groups(codes, shards=3) == [["0", "1", "2", "3"], ["4", "5", "6", "7"], ["8", "9"]]
+
+
+def test_shard_groups_tiny_pool():
+    """小池子始终单片（片数多于标的数也不拆碎）。"""
+    assert shard_groups(["a"], shards=8) == [["a"]]
+    assert shard_groups([], shards=8) == []
+
+
+def test_load_quotes_single_file(tmp_path):
+    """单文件模式：兼容小池子直取的 quotes.json。"""
+    fp = tmp_path / "quotes.json"
+    fp.write_text('{"A.SH": [{"close": 1}], "B.SH": [{"close": 2}]}', encoding="utf-8")
+    raw, notes = load_quotes(fp)
+    assert set(raw) == {"A.SH", "B.SH"}
+    assert notes == []
+
+
+def test_load_quotes_dir_merges_shards(tmp_path):
+    """目录模式：合并全部 *.json 分片；跨片重复的 ts_code 保留行数较多者。"""
+    (tmp_path / "shard_2.json").write_text('{"A.SH": [{"close": 1}]}', encoding="utf-8")
+    (tmp_path / "shard_1.json").write_text(
+        '{"A.SH": [{"close": 1}, {"close": 1}, {"close": 1}], "B.SH": [{"close": 2}]}',
+        encoding="utf-8",
+    )
+    raw, notes = load_quotes(tmp_path)
+    assert len(raw["A.SH"]) == 3  # shard_1 行数多，覆盖 shard_2 的单行版本
+    assert len(raw["B.SH"]) == 1
+    assert any("重复出现" in n for n in notes)
+
+
+def test_load_quotes_skips_non_list_value(tmp_path):
+    """分片里某标的的值不是数组 → 跳过并提示，不炸掉整批。"""
+    tmp_path.joinpath("shard_1.json").write_text(
+        '{"C.SH": "oops", "A.SH": [{"close": 1}]}', encoding="utf-8"
+    )
+    raw, notes = load_quotes(tmp_path)
+    assert list(raw) == ["A.SH"]
+    assert any("不是数组" in n for n in notes)
+
+
+def test_load_quotes_bad_shard_fails_closed(tmp_path):
+    """坏 JSON 分片 → ValueError 指明文件名，让主 agent 能重派该分片。"""
+    tmp_path.joinpath("shard_3.json").write_text("{bad json", encoding="utf-8")
+    with pytest.raises(ValueError, match="shard_3.json"):
+        load_quotes(tmp_path)
+
+
+def test_load_quotes_empty_dir_fails(tmp_path):
+    """目录下没有任何分片 → FileNotFoundError（视为未取数）。"""
+    with pytest.raises(FileNotFoundError):
+        load_quotes(tmp_path)
