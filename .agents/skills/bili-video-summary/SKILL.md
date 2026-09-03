@@ -46,7 +46,8 @@ description: B站视频的「拉取→转录→分析」流水线。当用户发
   - `python_missing`（退出码 2，系统无可用 Python）——**这是「非插件问题」**：停下，提示用户安装完整版 CPython 3.11+（勾选 Add to PATH）后自行重试；**不得自动装 Python、不得换路径兜底**。
   - `deps_missing`（退出码 1）——插件可自动修复：由 workspace-init 的 `setup_runtime.py --target <工作区>` 建 `.venv` 装 yt-dlp/faster-whisper，装完重跑 `--selfcheck` 至 ready。
   - `ready`（退出码 0）——直接跑转录。
-  - 装依赖失败（网络/编译/磁盘）也是**非插件问题**：停下，把脚本打印的原因转告用户、等用户确认后再重试，不 monkeypatch、不 `--target` 临时目录。
+  - `needs_escalation`（setup_runtime.py **退出码 3**，装依赖撞权限拒绝：Errno 13 / WinError 5，典型是会话文件沙箱受限令牌与 Python 建临时目录的行为冲突）——**唯一处置：提权重跑同一条命令、交用户审批**（批准→继续，拒绝→停下转告）；`--target` / monkeypatch / 换路径等替代方案会同样失败，一律禁止。
+  - 装依赖失败（网络/编译/磁盘，退出码 1）也是**非插件问题**：停下，把脚本打印的原因转告用户、等用户确认后再重试，不 monkeypatch、不 `--target` 临时目录。
 
 ## 分析流程
 

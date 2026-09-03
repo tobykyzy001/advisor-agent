@@ -20,7 +20,9 @@
 
 > 注意：本脚本**不装依赖、不建环境**。缺依赖时请先跑 workspace-init 的 setup_runtime.py
 > 准备 `.venv`，再用 `.venv/Scripts/python.exe` 运行本脚本；不要临时 `pip install --target`
-> 或 monkeypatch tempfile 去绕过系统 python 不可写——那会反复失败。
+> 或 monkeypatch tempfile 去绕过系统 python 不可写——那会反复失败。setup_runtime.py
+> 退出码 3 = 需提权（装依赖撞权限拒绝）：直接用会话的提权机制重跑同一条命令、
+> 交用户审批，不换路径。
 
 产物（默认写到 output/videos/<BV号>/，该目录已被 gitignore）：
     audio.*           原始音频（m4a，无需 ffmpeg 转 mp3）
@@ -85,6 +87,8 @@ def normalize_url(raw: str) -> str:
 EXIT_READY = 0
 EXIT_DEPS_MISSING = 1
 EXIT_PYTHON_MISSING = 2
+# setup_runtime.py 另有退出码 3（needs_escalation：装依赖撞权限拒绝，唯一处置是
+# 提权重跑同一条命令交用户审批）；本脚本自身不返回 3，但指引文案会引用它。
 
 
 def probe_system_python() -> str | None:
@@ -250,7 +254,8 @@ def main() -> None:
             "hint": "" if ok else (
                 "依赖未就绪（Python 可用、缺 yt-dlp/faster-whisper）：这是插件可自动修复的步骤，"
                 "运行 workspace-init 的 setup_runtime.py --target <工作区> 建 .venv 并装依赖后，"
-                "再用 .venv/Scripts/python.exe 运行本脚本。"
+                "再用 .venv/Scripts/python.exe 运行本脚本。若 setup_runtime.py 以退出码 3 结束"
+                "（装依赖撞权限拒绝），按其输出提权重跑同一条命令交用户审批，不要换路径。"
             ),
         }, ensure_ascii=False, indent=2))
         sys.exit(EXIT_READY if ok else EXIT_DEPS_MISSING)

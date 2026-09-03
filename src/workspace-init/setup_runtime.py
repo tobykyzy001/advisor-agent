@@ -15,11 +15,19 @@
   0  ready（--check 时依赖就绪）
   1  依赖安装失败（网络/编译/磁盘等；属环境问题，需用户处置，脚本只报错不硬来）
   2  python_missing（系统无可用 Python，需用户手动安装）
+  3  needs_escalation（安装撞权限拒绝：Errno 13 / WinError 5。典型是带文件沙箱的
+     会话里，受限令牌连 Python 建的受限临时目录都进不去，venv/ensurepip/pip 因此
+     失败。唯一处置：用会话的提权机制重跑同一条命令、交用户审批；--target /
+     monkeypatch / 换路径等替代方案会同样失败，一律禁止）
 
 设计约束：
   - 纯标准库（os / sys / subprocess / shutil / pathlib / argparse），零第三方依赖，任何 Python 3.11+ 能跑。
   - 幂等：.venv 已存在、依赖已装好则跳过不重复下载；--force 可强刷。
   - 不依赖本仓库 quantify 包，可拷贝到任意工作区单独运行。
+  - 权限与提权：.venv 与 pip 安装的写入全部落在目标工作区内；但 venv/ensurepip/pip
+    运行时要建「仅本用户」的受限临时目录，在带文件沙箱的会话里可能连自己都进不去
+    （Errno 13 / WinError 5）。此时以退出码 3 停下并打印提权指引，除此之外不提供
+    任何替代路径。
 
 用法：
   python setup_runtime.py --check                              # 只判定状态，不安装（退出码见上）
@@ -61,6 +69,12 @@ PACKAGE_MODULE = {
 EXIT_READY = 0
 EXIT_INSTALL_FAILED = 1
 EXIT_PYTHON_MISSING = 2
+EXIT_NEEDS_ESCALATION = 3
+
+# 权限拒绝的特征串（跨中英文环境）；命中即判定「需提权」而非普通安装失败。
+PERMISSION_MARKERS = (
+    "errno 13", "winerror 5", "permission denied", "access is denied", "拒绝访问",
+)
 
 
 def _venv_python(target: Path) -> Path:
@@ -78,6 +92,56 @@ def _venv_pip(target: Path) -> Path:
 def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
     print("  + " + " ".join(cmd), flush=True)
     return subprocess.run(cmd, cwd=str(cwd), check=False)
+
+
+def _run_capture(cmd: list[str], cwd: Path, echo: bool = False) -> tuple[int, str]:
+    """运行子进程并捕获合并输出；echo=True 时边回显边捕获（保持进度可见）。
+
+    捕获的全文用于失败后归类原因：权限拒绝 → 需提权（退出码 3），其它 → 环境问题。
+    """
+    if echo:
+        print("  + " + " ".join(cmd), flush=True)
+    buf: list[str] = []
+    proc = subprocess.Popen(
+        cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, errors="replace",
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        buf.append(line)
+        if echo:
+            print("  | " + line.rstrip(), flush=True)
+    rc = proc.wait()
+    return rc, "".join(buf)
+
+
+def _is_permission_error(text: str) -> bool:
+    """判断子进程输出是否属于权限拒绝（Errno 13 / WinError 5 等）。"""
+    lowered = (text or "").lower()
+    return any(m in lowered for m in PERMISSION_MARKERS)
+
+
+def _tail_detail(text: str, lines: int = 6) -> str:
+    """把捕获的底层报错压缩成「末尾 N 行」附在提示后，帮助定位真实原因。"""
+    if not text or not text.strip():
+        return ""
+    tail = [ln for ln in text.splitlines() if ln.strip()][-lines:]
+    return "\n  底层报错（末尾）：\n    " + "\n    ".join(tail)
+
+
+def _print_escalation_hint() -> None:
+    """权限拒绝时的确定性指引：提权重跑同一命令，交用户审批；禁止一切替代路径。"""
+    print(
+        "\n  ✗ 本次失败是「权限拒绝」（Errno 13 / WinError 5 / Access denied）。典型场景：\n"
+        "    会话文件沙箱的受限令牌与 Python 在 Windows 上建受限临时目录的行为冲突，\n"
+        "    venv / ensurepip / pip 都会因此失败（这不是 Python 缺组件，也不是网络问题）。\n"
+        "    唯一正确处置（替代路径会同样失败，一律禁止：--target / monkeypatch / 换目录 / 反复重试）：\n"
+        "    1) 用当前会话的提权机制（如 sandbox_permissions / danger-full-access）重跑\n"
+        "       同一条命令，附一句理由，交用户审批；\n"
+        "    2) 用户批准 → 继续走完流程；用户拒绝 → 停下如实转告，等用户指示。\n"
+        "    若提权后仍失败，再按「环境问题（磁盘/权限/Python 异常）」转告用户处置。",
+        flush=True,
+    )
 
 
 def probe_system_python() -> str | None:
@@ -111,23 +175,47 @@ def probe_system_python() -> str | None:
 
 
 def _ensure_venv(target: Path, python_exe: str) -> None:
-    """用给定的系统 Python 建持久 .venv；已存在则跳过。"""
+    """确保 .venv 就绪（有解释器且有 pip）；半成品（缺 pip，常见于上次被中断）自动补装。
+
+    venv 模块失败时会吞掉 ensurepip 的真实报错（只给退出码 1），所以失败后用
+    venv 解释器重跑 ensurepip 采集完整输出，把「权限拒绝（需提权）」和
+    「Python 环境异常」区分开，各自走确定性的处置路径。
+    """
     py = _venv_python(target)
-    if py.exists():
-        print(f"  .venv 已存在，跳过创建：{py}", flush=True)
+    pip = _venv_pip(target)
+    if py.exists() and pip.exists():
+        print(f"  .venv 已就绪，跳过创建：{py}", flush=True)
         return
-    print(f"  [1/2] 用 {python_exe} -m venv 创建持久虚拟环境 .venv …", flush=True)
-    result = _run([python_exe, "-m", "venv", str(target / VENV_NAME)], target)
-    if result.returncode != 0:
-        print(
-            "  ✗ 创建 .venv 失败。这通常不是插件问题，而是当前 Python 环境异常：\n"
-            "    1) 可能是精简版/商店版 Python（缺少 ensurepip 或 venv 模块）；\n"
-            "    2) 或目标磁盘不可写。\n"
-            "    请用户改用完整安装的 CPython 3.11+ 后重试，脚本不再自动兜底。",
-            flush=True,
-        )
-        sys.exit(EXIT_INSTALL_FAILED)
-    print("  ✓ .venv 创建完成", flush=True)
+    if py.exists():
+        print("  ! .venv 是半成品（有解释器、缺 pip，通常是上次安装被中断），重新补装…", flush=True)
+    else:
+        print(f"  [1/2] 用 {python_exe} -m venv 创建持久虚拟环境 .venv …", flush=True)
+    _run([python_exe, "-m", "venv", str(target / VENV_NAME)], target)
+    if pip.exists():
+        print("  ✓ .venv 创建完成", flush=True)
+        return
+
+    # venv 没能把 pip 装进去：重跑 ensurepip 采集真实原因并归类。
+    detail = ""
+    if py.exists():
+        _, detail = _run_capture([str(py), "-m", "ensurepip", "--default-pip"], target)
+        if pip.exists():
+            print("  ✓ .venv 补装完成", flush=True)
+            return
+        if _is_permission_error(detail):
+            _print_escalation_hint()
+            if detail.strip():
+                print(_tail_detail(detail), flush=True)
+            sys.exit(EXIT_NEEDS_ESCALATION)
+    print(
+        "  ✗ 创建 .venv 失败（pip 未装上）。这通常不是插件问题，而是当前 Python 环境异常：\n"
+        "    1) 可能是精简版/商店版 Python（缺少 ensurepip 或 venv 模块）；\n"
+        "    2) 或目标磁盘不可写。\n"
+        "    请用户改用完整安装的 CPython 3.11+ 后重试，脚本不再自动兜底。"
+        + _tail_detail(detail),
+        flush=True,
+    )
+    sys.exit(EXIT_INSTALL_FAILED)
 
 
 def _installed(target: Path, module: str) -> bool:
@@ -144,7 +232,11 @@ def _installed(target: Path, module: str) -> bool:
 
 
 def _install(target: Path, packages: list[str], force: bool) -> None:
-    """用 .venv pip 安装依赖；已装且非 force 则跳过；失败即 exit 1（报错不硬来）。"""
+    """用 .venv pip 安装依赖；已装且非 force 则跳过。
+
+    失败按原因分流：权限拒绝 → 退出码 3（提权重跑同一命令，交用户审批）；
+    网络/编译/磁盘等 → 退出码 1（环境问题，转告用户，脚本不硬来）。
+    """
     pip = _venv_pip(target)
     base = [str(pip), "install", "--disable-pip-version-check", "-i", PIP_INDEX]
     to_install: list[str] = []
@@ -158,10 +250,13 @@ def _install(target: Path, packages: list[str], force: bool) -> None:
         return
 
     print(f"  [2/2] 安装依赖：{' '.join(to_install)}（首次较慢，请耐心等待）…", flush=True)
-    result = _run(base + to_install, target)
-    if result.returncode != 0:
+    rc, out = _run_capture(base + to_install, target, echo=True)
+    if rc != 0:
+        if _is_permission_error(out):
+            _print_escalation_hint()
+            sys.exit(EXIT_NEEDS_ESCALATION)
         print(
-            "\n  ✗ 依赖安装失败。这是「环境/网络」问题，不是插件问题，需用户处置：\n"
+            "\n  ✗ 依赖安装失败（原因见上方 pip 输出）。这是「环境/网络」问题，不是插件问题，需用户处置：\n"
             "    1) 网络不通 → 已用清华镜像，仍失败请自行配置代理/换镜像后重试；\n"
             "    2) 需要编译（如 ctranslate2 无 wheel）→ 确认 Python 版本有对应轮子或升级 pip；\n"
             "    3) 磁盘/权限 → 确认 .venv 目录可写。\n"

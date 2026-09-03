@@ -76,7 +76,7 @@ python src/workspace-init/setup_runtime.py --target D:/my-advisor
 - **目录无脑补建**：`mkdir -p`，已存在不报错。
 - **模板只补不覆盖**：目标文件已存在则跳过并提示，绝不覆盖用户已回填的持仓/观察仓/知识库内容。
 - **纯标准库**：`init_workspace.py` 只依赖 `pathlib` / `argparse`；`setup_runtime.py` 只依赖 `os/sys/subprocess/shutil/pathlib/argparse`，两者都不依赖本仓库 quantify 包，可拷到任意机器单独运行；目标目录也不要求是 git 仓库(仍会生成 `.gitignore` 备用)。
-- **Python 边界（重要）**：`setup_runtime.py` 只负责建 `.venv` + 装第三方依赖，**不负责安装 Python 解释器本身**。检测到系统无可用 Python 时输出 `python_missing`、以退出码 2 停下，提示用户安装完整版 CPython 3.11+（勾选 Add to PATH）——这是「非插件问题」，需用户确认处置，脚本不做任何自动安装/兜底。装依赖失败（网络/编译/磁盘）同理：报错停下、等用户处置，不换路径硬来。
+- **Python 边界（重要）**：`setup_runtime.py` 只负责建 `.venv` + 装第三方依赖，**不负责安装 Python 解释器本身**。检测到系统无可用 Python 时输出 `python_missing`、以退出码 2 停下，提示用户安装完整版 CPython 3.11+（勾选 Add to PATH）——这是「非插件问题」，需用户确认处置，脚本不做任何自动安装/兜底。装依赖失败（网络/编译/磁盘，退出码 1）同理：报错停下、等用户处置，不换路径硬来。**权限拒绝例外（退出码 3 needs_escalation）**：安装撞 Errno 13 / WinError 5（典型为会话文件沙箱的受限令牌与 Python 建临时目录冲突）时，脚本打印提权指引并以退出码 3 停下——agent 的唯一动作是用会话提权机制重跑**同一条**命令、交用户审批；`--target` / monkeypatch / 换路径等替代方案会同样失败，一律禁止。半成品 `.venv`（有解释器、缺 pip，常因上次安装被中断）下次运行会自动补装，无需手动清理。
 
 ## 与其它技能的分工
 
