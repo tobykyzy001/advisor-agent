@@ -1,6 +1,17 @@
 # AGENTS.md
 
-面向 **A股/港股** 的投资顾问式智能体项目：投顾知识库 + 估值研究 + 选股信号 + 组合风控。偏**研究/估值**，不涉及回测。代码、配置、注释均为**中文**。
+> 本文档面向 **agent / AI 编码助手**：说明本仓库是做什么的、目录怎么组织、有哪些约定不能踩。给「人 / 用户」看的完整说明见 [README.md](./README.md)。
+
+## 本仓库是做什么的
+
+面向 **A股/港股** 的投资顾问式智能体项目：投顾知识库 + 估值研究 + 选股信号 + 组合风控。偏**研究/估值**，**不涉及回测**。
+
+一个仓库、两重身份：
+
+1. **Python 研究/估值量化核心**（`src/quantify`）：数据层 → 估值 → 选股信号 → 组合风控 → LLM 研报生成，可 CLI / 编程调用。
+2. **DeepSeek Harness（DSH）第三方插件**（`src/index.js` + `lib/client.js` + `src/workspace-init/`）：把 `.agents/skills` 里的投顾 skill 表单化，以侧边栏「投研工具」图形入口运行「拉数据 → 分析 → 生成结论」流水线。
+
+代码、配置、注释、提交信息均为**中文**。
 
 > ⚠️ 本仓库所有输出仅供研究参考，不构成投资建议。
 
@@ -65,5 +76,17 @@ output/momentum/            # 动量轮动取数缓存、组合信号报告与�
 ## 工程约定
 
 - 代码风格：ruff（line-length=100, py311），`src` 布局 + setuptools 自动发现。
+- **新增/修改代码、配置、注释、提交信息一律用中文**（例外：代码标识符、日志里的字段名、外部约定的英文术语）。
+- **只改该任务要求的文件**：不改与此任务无关的代码；与任务无因果关系的格式 / 风格调整不要夹带。
+- 改完 Python 代码**先跑测试**：`.venv/Scripts/python.exe -m pytest`，全绿再交付。
+- **提交边界**：`output/`、`.venv/`、`.env`、`__pycache__/`、`.tmp/` 等运行时/本地产物均已忽略，**不得 `git add` 或撰写进提交**。含密钥的配置（tushare MCP URL/token、LLM key）绝不入库。
 - 新增知识规则放 `src/quantify/knowledge/rules/*.yaml`（package-data 会自动打包）。
 - 改动估值/风控/选股逻辑时，先读 `docs/prosperity_investing.md` 与 `knowledge/rules/` 下的估值、策略、风控规则。
+
+## 提交与验证清单（改代码前后对照）
+
+- [ ] 只动了任务范围内的文件，无关改动未夹带。
+- [ ] 新增代码/注释为中文，风格通过 ruff。
+- [ ] `.venv/Scripts/python.exe -m pytest` 全绿。
+- [ ] 未 `git add` 任何 `output/`、`.venv/`、`.env`、`__pycache__/`、`.tmp/` 下的文件。
+- [ ] 若新增/调整了 skill，已同步更新本文件技能清单与相关 `SKILL.md` 的分工说明。
