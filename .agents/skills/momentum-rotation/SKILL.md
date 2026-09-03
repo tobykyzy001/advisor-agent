@@ -1,6 +1,6 @@
 ---
 name: momentum-rotation
-description: 中期动量轮动选股技能。当用户要求「给观察股票池按中期动量排名选最强的一组等权买入」「做一套长短双动量+老仓粘性的轮动策略」「收盘后扫一遍观察池选8只等权持仓」时触发。核心：读观察仓标的池 → 用 tushare MCP 取每只近250日线 → 算 mom20/mom120/mom60 三条区间动量 → 三道过滤（MA120趋势关 / 反追高关 / 大盘状态关）→ 快慢双榜排名 + 老仓buffer16粘性 + 快4慢4补满8仓 → 等权组合 + 止损 + 流动性约束 + 空仓兜底。与 stock-valuation(个股估值)、prosperity-analysis(行业景气)、w-bottom-screener(形态买点)互补：本技能是「给定池子的动量排名→组合轮动」，不看估值/景气/形态。
+description: 中期动量轮动选股技能。当用户要求「给观察股票池按中期动量排名选最强的一组等权买入」「做一套长短双动量+老仓粘性的轮动策略」「收盘后扫一遍观察池选8只等权持仓」时触发。核心：读观察仓标的池 → 用 tushare MCP 取每只近250日线 → 算 mom20/mom120/mom60 三条区间动量 → 三道过滤（MA120趋势关 / 反追高关 / 大盘状态关）→ 快慢双榜排名 + 老仓buffer16粘性 + 快4慢4补满8仓 → 等权组合 + 流动性约束 + 空仓兜底；退出纯靠排名滚动（无价格止损）。与 stock-valuation(个股估值)、prosperity-analysis(行业景气)、w-bottom-screener(形态买点)互补：本技能是「给定池子的动量排名→组合轮动」，不看估值/景气/形态。
 ---
 
 # 中期动量轮动（Momentum Rotation）
@@ -51,12 +51,8 @@ description: 中期动量轮动选股技能。当用户要求「给观察股票�
 
 - 组合最多 8 只，**等权**，每只占总资产 `1/8 = 12.5%`。
 - **退出机制＝纯滚动，无价格止损**：持仓期间没有任何价格型止损在跑。退出全靠动量排名机制——股票跌出快/慢榜前 16 名缓冲 → 下次调仓被移出目标组合 → 生成 `zero_out` 清仓单。跌破 MA120 只是「不再具备新买入资格」，**已在手的仓位仍靠前 16 名缓冲决定去留**，不是跌破均线就立刻卖。
-- **止损价（防极端跳空，非盯盘止损）**：止损价 = **信号日收盘价** × `stop_loss_ratio`（默认 0.5，即 `risk.stop_loss_multiplier`）。它**只在 T+1 执行日开盘前校验一次**：
-  - 开盘价 < 止损价（即开盘比信号日收盘跌超 50%）→ 这笔**买入单跳过**，理由 `invalidated_pre_execution`（信号已失效，不买了）；若同时有卖出单，卖出照常执行并标记 `stop_confirmed_at_open`。
-  - 开盘价 ≥ 止损价 → 正常成交。
-  - 50% 的深度意味着正常市况下几乎不触发——A股主板跌停才 -10%、创业板/科创板 -20%，单日开盘跌穿 -50% 基本只存在于重大黑天鹅复盘首日。它只是一根防「收盘出信号、次日开盘腰斩」的保险丝。
 - **流动性约束**：单票下单量 ≤ 信号日成交量 × `max_trade_vol_ratio`（默认 10%）。
-- **节奏**：信号日（T）收盘后出信号，T+1 执行成交。
+- **节奏**：信号日（T）收盘后算信号，按 **T 日收盘价成交**（信号与成交同一天，无隔日滑点）。
 
 ### 5. 数据问题 fail-closed
 
@@ -66,7 +62,7 @@ description: 中期动量轮动选股技能。当用户要求「给观察股票�
 
 ### 6. 一键回滚开关
 
-- 环境变量 `STRATEGY_T1_PLAN_MODE=decision_runs`：T+1 执行链条故障时一键回滚，脚本**只产决策快照、不回写持仓状态**，不下达执行计划。
+- 环境变量 `STRATEGY_MOMENTUM_DECISION_MODE=decision_runs`：一键降级，脚本**只产决策快照、不回写持仓状态**（研究核对或执行链故障时用，不写入会被下一轮当成「老仓」依据的状态）。
 
 ## 数据源约定（硬约束）
 
@@ -74,42 +70,36 @@ description: 中期动量轮动选股技能。当用户要求「给观察股票�
 - **无 MCP 直接拒绝运行**：会话内无 `mcp__tushareMcp__daily` 工具、或未在投研工具设置卡片填 tushare MCP 地址时，**本功能不可用**，直接报错提示用户先配置，**不得回退 akshare、不写 tushare SDK 直连**。
 - 取数字段保留：`trade_date / open / high / low / close / vol`，时点标注数据更新时间。
 
-## 总流程（三段式，取数由 agent 完成）
-
-```
-列出观察仓 → agent 逐只调 tushare MCP 取近250日线 → 回填 JSON → 脚本算排名/过滤/调仓 → 出组合报告
-```
-
-### 第 1 步：读观察仓 + 待取数清单
-
-```bash
-python src/workspace-init/momentum_strategy.py --watchlist output/watchlist/watchlist.yaml --plan
-```
+## 总流程（投研工具面板一步式，取数由 agent 完成）
 
 > 脚本 `momentum_strategy.py` 自包含单文件（纯标准库、零 quantify 依赖），随插件包 `src/` 分发、
 > 由宿主静态端点 `/plugins/advisor-agent/assets/workspace-init/momentum_strategy.py` 提供下载。
 
-### 第 2 步：agent 会话内取数
+**主路径：投研工具面板「中期动量排名」一步式**（agent 全程自动，无需中间手动回填）：
 
-对清单里每个 `ts_code`，调用 `mcp__tushareMcp__daily` 取近 250+ 交易日日线，整理成 JSON：
-
-```json
-{ "600519.SH": [ {"trade_date":"20250102","open":..,"high":..,"low":..,"close":..,"vol":..}, ... ] }
+```
+读观察仓 watchlist.yaml → agent 逐只调 tushare MCP 取近250日线 → 一次性调脚本 → 出目标组合报告 + 回写持仓状态
 ```
 
-保存为 `output/momentum/quotes.json`。
-
-### 第 3 步：排名/过滤/调仓 + 出报告
-
 ```bash
-python src/workspace-init/momentum_strategy.py \
+# agent 依次执行：读池 → 取数 → 调脚本（一次）
+python <下载到的 momentum_strategy.py> \
   --watchlist output/watchlist/watchlist.yaml \
   --state output/momentum/state.json \
   --data output/momentum/quotes.json
 ```
 
-- 输出 `output/momentum/plan_<时间戳>.md`：大盘状态、目标持仓（快榜/慢榜排名 + mom + 现价 + 建仓价 + 止损价）、逐只过滤明细。
+- 输出 `output/momentum/plan_<时间戳>.md`：大盘状态、目标持仓（快榜/慢榜排名 + mom + 现价）、逐只过滤明细。
 - 回写持仓状态 `output/momentum/state.json`（含 as_of / cash_pct / signal / target / positions），供下一轮「老仓优先」使用。
+
+**备选：无面板直连时的三段式**（`--plan` 列观察仓/待取数清单 → agent 调 MCP 回填 `quotes.json` → `--data` 出报告），脚本仍保留该能力；投研工具面板不需要走这条路。
+
+```bash
+# 第 1 步：读观察仓 + 待取数清单
+python src/workspace-init/momentum_strategy.py --watchlist output/watchlist/watchlist.yaml --plan
+# 第 2 步：agent 会话内对清单每只调 mcp__tushareMcp__daily 取近250+日线，整理成 JSON 存 quotes.json
+# 第 3 步：排名/过滤/调仓 + 出报告（同上面主路径的 --data 调用）
+```
 
 ---
 
@@ -144,7 +134,6 @@ python src/workspace-init/momentum_strategy.py \
 | `buffer-rank` | 16 | 老仓粘性名次 |
 | `max-positions` | 8 | 最大持仓数（等权） |
 | `fast-top` / `slow-top` | 4 / 4 | 补位快 4 + 慢 4 |
-| `stop-loss-ratio` | 0.5 | 跳空防护止损系数（止损价=信号日收盘×0.5，仅 T+1 开盘校验一次） |
 | `max-trade-vol-ratio` | 0.10 | 流动性 10% |
 | `coverage-min` | 0.95 | 覆盖率下限 |
 | `history-min` | 121 | 最低历史交易日 |

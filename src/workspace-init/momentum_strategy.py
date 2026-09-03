@@ -42,24 +42,19 @@ agent 下载执行（与 workspace-init/init_workspace.py、w_bottom_screen.py �
   - 退出机制：**纯滚动**。持仓期间没有任何价格型止损在跑——股票跌出快/慢榜前
     buffer_rank（16）名缓冲 → 下次调仓被移出目标组合 → 生成 zero_out 清仓单。
     跌破 MA120 只是失去「新买入资格」，已持仓的仍靠前 16 名缓冲决定去留。
-  - 止损价（防极端跳空，非盯盘止损）：止损价 = 信号日收盘价 × stop_loss_ratio
-    （默认 0.5）。它**只在 T+1 执行日开盘前校验一次**：开盘价 < 止损价 →
-    该笔**买入单跳过**（invalidated_pre_execution，信号失效不买）；若同时有卖出单，
-    卖出照常执行并标记 stop_confirmed_at_open。50% 深度意味着正常市况几乎不触发，
-    仅防「收盘出信号、次日开盘腰斩」的灾难性跳空。
   - 流动性：单票下单量 ≤ 信号日成交量 × max_trade_vol_ratio（默认 10%）。
-  - 节奏：信号日出信号（T），T+1 执行；回滚开关见 STRATEGY_T1_PLAN_MODE。
+  - 节奏：信号日（T）收盘算信号，按 T 日收盘价成交；回滚开关见 STRATEGY_MOMENTUM_DECISION_MODE。
 
 fail-closed（数据安全）：
   - 池内历史数据覆盖率 < coverage_min（默认 95%）→ 不出信号（no_signal）。
   - 某只股票历史不足 121 交易日（需算 mom120/MA120）→ 该只剔除并在报告标注。
   - 若过滤后一只合格标的都没有 → 按兜底规则退出现金（不留半仓凑合）。
 
-一键回滚开关（环境变量 STRATEGY_T1_PLAN_MODE=decision_runs）：
-  这是「一键降级」开关：当 T+1 执行计划这条链路（--plan 之后对 → 决定 → 明日执行）出现
-  故障需要回滚时，设置 STRATEGY_T1_PLAN_MODE=decision_runs 后，脚本跳过「T+1 执行计划」
-  的输出环节，只产出「决策快照（decision_runs）」这一最保守口径，避免在不确定状态下
-  下达成交计划。详见 `--data` 输出差异。
+一键回滚开关（环境变量 STRATEGY_MOMENTUM_DECISION_MODE=decision_runs）：
+  这是「一键降级」开关：当需要只产出决策、不落状态时（如链路故障或仅做研究核对），
+  设置 STRATEGY_MOMENTUM_DECISION_MODE=decision_runs 后，脚本跳过「回写持仓状态 state.json」
+  这一步，只打印决策快照（排名/过滤/目标持仓的确定性结果），避免在不确定状态下
+  写入会被下一轮当作「老仓」依据的状态。详见 `--data` 输出差异。
 ────────────────────────────────────────────────────────────────────────────────
 
 两层式工作流（三段式，与 copy-trade / w-bottom-screener 一致）：
@@ -70,7 +65,7 @@ fail-closed（数据安全）：
         {"600519.SH": [{"trade_date":"20250102","open":..,"high":..,"low":..,"close":..,"vol":..}, ...], ...}
  3) python momentum_strategy.py --watchlist output/watchlist/watchlist.yaml \
         --state output/momentum/state.json --data output/momentum/quotes.json
-        —— 跑选股排名/过滤/调仓，产出组合信号与持仓（T+1 执行计划），
+        —— 跑选股排名/过滤/调仓，产出组合信号与持仓（T 日收盘价成交），
            并回写持仓状态 state.json；报告落在 output/momentum/plan_<时间戳>.md。
 
 已有持仓通过 `--state` 传入（上一轮信号输出会自动回写 state.json；首次运行无 state 则视为空仓）。
@@ -130,7 +125,6 @@ class StrategyParams:
     max_positions: int = 8         # 最大持仓数（等权）
     fast_top: int = 4              # 补仓：快榜前 N
     slow_top: int = 4              # 补仓：慢榜前 N
-    stop_loss_ratio: float = 0.5   # 止损系数：止损价 = 信号日收盘价 × 此系数（仅 T+1 开盘一次性校验）
     max_trade_vol_ratio: float = 0.10  # 流动性：单票下单量 ≤ 信号日成交量 × 10%
     coverage_min: float = 0.95     # 覆盖率下限（低于则 fail-closed 不出信号）
     history_min: int = 121         # 每只股票最低历史交易日（mom120+1 可用）
@@ -300,15 +294,6 @@ def ma(closes: list[float], window: int) -> float | None:
         return None
     seg = closes[-window:]
     return sum(seg) / len(seg)
-
-
-def stop_price(signal_close: float, ratio: float) -> float:
-    """跳空防护止损价 = 信号日收盘价 × ratio。
-
-    只在 T+1 执行日开盘前校验一次：开盘 < 止损价 → 买入单跳过；持仓期间不盯价格。
-    退出机制是纯滚动（跌出前 16 名缓冲被 zero_out），而非这个止损价。
-    """
-    return signal_close * ratio
 
 
 def compute_metrics(series: Series, p: StrategyParams) -> Decision:
@@ -533,7 +518,7 @@ def _data(watchlist_path: Path, data_path: Path, state_path: Path | None, p: Str
 
     weight = 1.0 / p.max_positions if p.max_positions else 0.0
 
-    # 信号日 = 数据中出现的最后一个交易日期（agent 提示 T+1 执行）
+    # 信号日 = 数据中出现的最后一个交易日期（成交 = 该日收盘价）
     last_dates = [s.bars[-1].date for s in series_list if s.bars]
     signal_date = max(last_dates).isoformat() if last_dates else ""
 
@@ -542,7 +527,7 @@ def _data(watchlist_path: Path, data_path: Path, state_path: Path | None, p: Str
     lines.append("# 中期动量轮动策略 · 组合信号")
     lines.append("")
     lines.append(f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append(f"- 信号日：{signal_date}（T+1 执行）")
+    lines.append(f"- 信号日：{signal_date}（按 T 日收盘价成交）")
     lines.append(f"- 观察池标的数：{total}")
     lines.append(f"- 数据覆盖率：{coverage:.1%}")
     lines.append(f"- 大盘状态（mom60 中位数）：{regime}" + ("（冻结新增）" if regime == "down" else ""))
@@ -561,24 +546,20 @@ def _data(watchlist_path: Path, data_path: Path, state_path: Path | None, p: Str
     dm = {d.ts_code: d for d in decisions}
     if target:
         lines.append("")
-        lines.append("## 本次目标持仓（T+1 执行）")
+        lines.append("## 本次目标持仓（T 日收盘价成交）")
         lines.append("")
-        lines.append("| 代码 | 名称 | 快榜 | 慢榜 | mom20 | mom120 | 现价 | 止损价(信号日收盘×0.5) | 备注 |")
-        lines.append("|---|---|---|---|---|---|---|---|---|")
+        lines.append("| 代码 | 名称 | 快榜 | 慢榜 | mom20 | mom120 | 现价 | 备注 |")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for code in target:
             d = dm.get(code)
             if d is None:
                 continue
-            # 止损价 = 信号日收盘价 × stop_loss_ratio（仅新买入单在 T+1 开盘校验一次；
-            # 老仓保留沿用上一轮已记录的止损价，不重新校验，仅作展示）
-            stop = stop_price(d.close, p.stop_loss_ratio)
             tag = "老仓" if code in current else "新增"
             lines.append(
                 f"| {code} | {d.name} | {d.rank_fast} | {d.rank_slow} | {d.mom20:.1%} | "
-                f"{d.mom120:.1%} | {d.close:.2f} | {stop:.2f} | {tag} |"
+                f"{d.mom120:.1%} | {d.close:.2f} | {tag} |"
             )
         lines.append("")
-        lines.append("> 止损价 = 信号日收盘价 × 0.5，仅在 T+1 执行日开盘前校验一次：开盘 < 止损价 → 买入跳过；")
         lines.append("> 持仓期间无价格止损，退出靠排名跌出前 16 名缓冲被动滚动（zero_out）。")
         lines.append("")
     else:
@@ -609,19 +590,12 @@ def _data(watchlist_path: Path, data_path: Path, state_path: Path | None, p: Str
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
-    # 回写 state.json（含新目标持仓、信号日收盘价、跳空防护止损价、权重）
+    # 回写 state.json（含新目标持仓与等权权重）
     new_positions: list[dict] = []
     for code in target:
-        d = dm.get(code)
-        if d is None:
-            continue
-        # 止损价 = 信号日收盘价 × stop_loss_ratio（仅 T+1 开盘一次性校验，防极端跳空）
-        signal_close = d.close
         new_positions.append({
             "ts_code": code,
-            "signal_close": round(signal_close, 4),
             "weight": weight,
-            "stop_price": round(stop_price(signal_close, p.stop_loss_ratio), 4),
         })
     new_state = {
         "as_of": signal_date,
@@ -637,7 +611,7 @@ def _data(watchlist_path: Path, data_path: Path, state_path: Path | None, p: Str
     print("\n".join(lines))
     print(f"\n报告已保存：{out_path}")
     if not write_plan:
-        print("[降级] STRATEGY_T1_PLAN_MODE=decision_runs：仅产出决策快照，未回写持仓状态。")
+        print("[降级] STRATEGY_MOMENTUM_DECISION_MODE=decision_runs：仅产出决策快照，未回写持仓状态。")
     elif state_path:
         print(f"持仓状态已回写：{state_path}")
     return 0
@@ -661,17 +635,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--buffer-rank", type=int, default=16)
     ap.add_argument("--fast-top", type=int, default=4)
     ap.add_argument("--slow-top", type=int, default=4)
-    ap.add_argument("--stop-loss-ratio", type=float, default=0.5)
     ap.add_argument("--max-trade-vol-ratio", type=float, default=0.10)
     ap.add_argument("--coverage-min", type=float, default=0.95)
     ap.add_argument("--history-min", type=int, default=121)
     ap.add_argument("--hold-on-empty", choices=["true", "false"], default="true")
     args = ap.parse_args(argv)
 
-    # 一键回滚/降级开关（环境变量 STRATEGY_T1_PLAN_MODE=decision_runs）：
+    # 一键回滚/降级开关（环境变量 STRATEGY_MOMENTUM_DECISION_MODE=decision_runs）：
     # 置为 decision_runs 时，脚本只产出「决策快照」（排名/过滤/目标持仓的确定性结果），
-    # 不回写持仓状态 state.json，也不下发 T+1 执行计划——用于 T+1 执行链路故障时一键回滚。
-    write_plan = os.getenv("STRATEGY_T1_PLAN_MODE", "").strip() != "decision_runs"
+    # 不回写持仓状态 state.json——用于研究核对或执行链故障时一键降级，避免误写下一轮的「老仓」依据。
+    write_plan = os.getenv("STRATEGY_MOMENTUM_DECISION_MODE", "").strip() != "decision_runs"
 
     if args.plan:
         return _plan(Path(args.watchlist))
@@ -689,7 +662,6 @@ def main(argv: list[str] | None = None) -> int:
             max_positions=args.max_positions,
             fast_top=args.fast_top,
             slow_top=args.slow_top,
-            stop_loss_ratio=args.stop_loss_ratio,
             max_trade_vol_ratio=args.max_trade_vol_ratio,
             coverage_min=args.coverage_min,
             history_min=args.history_min,

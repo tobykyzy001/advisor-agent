@@ -27,9 +27,17 @@ output/
 # ---- 临时调试产物 ----
 .tmp/
 
-# ---- 观察仓 / W底筛选运行时产物（个人关注信息） ----
+# ---- 观察仓 / W底筛选 / 动量轮动运行时产物（个人关注信息） ----
 output/watchlist/
 output/w-bottom/
+output/momentum/
+
+# ---- 投研工具运行时下载的脚本副本（真源在 src/workspace-init/，随插件分发） ----
+scripts/init_workspace.py
+scripts/setup_runtime.py
+scripts/w_bottom_screen.py
+scripts/momentum_strategy.py
+scripts/transcribe_video.py
 
 # ---- Tooling ----
 .pytest_cache/

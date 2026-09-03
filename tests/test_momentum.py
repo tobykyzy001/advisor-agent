@@ -30,7 +30,6 @@ StrategyParams = m.StrategyParams
 Decision = m.Decision
 mom = m.mom
 ma = m.ma
-stop_price = m.stop_price
 compute_metrics = m.compute_metrics
 _filter = m._filter
 market_regime = m.market_regime
@@ -72,12 +71,6 @@ def test_ma_basic():
 
 def test_ma_insufficient():
     assert ma([1.0, 2.0], 3) is None
-
-
-def test_stop_price_semantics():
-    """止损价 = 信号日收盘价 × 0.5（防跳空防护，仅 T+1 开盘校验一次，非持仓盯盘止损）。"""
-    assert stop_price(20.0, 0.5) == pytest.approx(10.0)
-    assert stop_price(22.97, 0.5) == pytest.approx(11.485, rel=1e-6)
 
 
 # ─────────────────────────────────────────────────────────────────────────

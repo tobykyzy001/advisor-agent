@@ -30,6 +30,10 @@ const ASSET_PATH = fileURLToPath(new URL('./workspace-init/init_workspace.py', i
 // 纯标准库、零 quantify 依赖，目标工作区 agent 下载后直接 python 运行。
 export const WB_SCREEN_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/w_bottom_screen.py'
 const WB_SCREEN_PATH = fileURLToPath(new URL('./workspace-init/w_bottom_screen.py', import.meta.url))
+// 中期动量排名自包含脚本的静态分发端点（与 w-bottom-screener 同模式）：
+// 纯标准库、零 quantify 依赖，目标工作区 agent 下载后直接 python 运行，一次性出目标组合。
+export const MOMENTUM_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/momentum_strategy.py'
+const MOMENTUM_PATH = fileURLToPath(new URL('./workspace-init/momentum_strategy.py', import.meta.url))
 // B站视频转录（自包含脚本）的静态分发端点：目标工作区 agent 下载后直接 python 运行，
 // 不依赖 .agents/skills。脚本真源 src/workspace-init/transcribe_video.py。
 export const TRANSCRIBE_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/transcribe_video.py'
@@ -43,7 +47,7 @@ try {
 }
 
 // 默认启用的技能固定来自 lib/client.js 内联注册表 ADVISOR_SKILLS 的 id 集合；若丢失，用最小兜底。
-export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'bili-video-summary']
+export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'momentum-rotation', 'bili-video-summary']
 
 const defaults = Object.freeze({
   enabled: true,
@@ -226,6 +230,14 @@ function mount(ctx, config = {}) {
           handler: makeAssetHandler(WB_SCREEN_PATH, 'workspace-init/w_bottom_screen.py'),
         }),
         'advisor-agent: w-bottom-screener asset endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: MOMENTUM_ENDPOINT,
+          handler: makeAssetHandler(MOMENTUM_PATH, 'workspace-init/momentum_strategy.py'),
+        }),
+        'advisor-agent: momentum-rotation asset endpoint',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({
