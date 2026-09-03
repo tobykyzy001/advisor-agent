@@ -38,6 +38,11 @@ const MOMENTUM_PATH = fileURLToPath(new URL('./workspace-init/momentum_strategy.
 // 不依赖 .agents/skills。脚本真源 src/workspace-init/transcribe_video.py。
 export const TRANSCRIBE_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/transcribe_video.py'
 const TRANSCRIBE_PATH = fileURLToPath(new URL('./workspace-init/transcribe_video.py', import.meta.url))
+// 运行时环境准备（自包含脚本）的静态分发端点：在目标工作区建持久 .venv 并装
+// yt-dlp/faster-whisper 等依赖。脚本真源 src/workspace-init/setup_runtime.py ——
+// 由 workspace-init 职责承载，bili-video-summary 等依赖第三方库的技能统一走它。
+export const SETUP_RUNTIME_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/setup_runtime.py'
+const SETUP_RUNTIME_PATH = fileURLToPath(new URL('./workspace-init/setup_runtime.py', import.meta.url))
 
 let Schema = null
 try {
@@ -246,6 +251,14 @@ function mount(ctx, config = {}) {
           handler: makeAssetHandler(TRANSCRIBE_PATH, 'workspace-init/transcribe_video.py'),
         }),
         'advisor-agent: bili-video-summary transcript asset endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: SETUP_RUNTIME_ENDPOINT,
+          handler: makeAssetHandler(SETUP_RUNTIME_PATH, 'workspace-init/setup_runtime.py'),
+        }),
+        'advisor-agent: setup-runtime asset endpoint',
       )
     })
     // 在 tools 语境下建 tushare MCP 连接桥，并在 URL 变化时热切换（立即生效）。
