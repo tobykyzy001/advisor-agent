@@ -109,6 +109,7 @@ python src/workspace-init/momentum_strategy.py --watchlist output/watchlist/watc
 - 行业景气上/下行 → `prosperity-analysis`。
 - 自己持仓的持续跟踪 → `portfolio-tracker`（本技能产出的是策略组合，不是人工持仓清单）。
 - 技术形态买点 → `w-bottom-screener`（本技能与 W底筛选共用观察仓，但一个是形态触发器、一个是动量轮动）。
+- 往观察仓加/删标的、或轮动结果给条目留 param → `watchlist-manager`（本技能对清单只读，写入一律委托它：`set <code> --MR 3`）。
 
 ## 生成数据 vs 技能方法（提交边界）
 

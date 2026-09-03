@@ -43,6 +43,11 @@ const TRANSCRIBE_PATH = fileURLToPath(new URL('./workspace-init/transcribe_video
 // 由 workspace-init 职责承载，bili-video-summary 等依赖第三方库的技能统一走它。
 export const SETUP_RUNTIME_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/setup_runtime.py'
 const SETUP_RUNTIME_PATH = fileURLToPath(new URL('./workspace-init/setup_runtime.py', import.meta.url))
+// 观察仓清单管理（自包含脚本）的静态分发端点（与 w-bottom-screener 同模式）：
+// 纯标准库、零 quantify 依赖，目标工作区 agent 下载后直接 python 运行。
+// watchlist-manager 技能的脚本真源，供 stock-valuation / copy-trade 等流程委托调用。
+export const WATCHLIST_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/manage_watchlist.py'
+const WATCHLIST_PATH = fileURLToPath(new URL('./workspace-init/manage_watchlist.py', import.meta.url))
 
 let Schema = null
 try {
@@ -259,6 +264,14 @@ function mount(ctx, config = {}) {
           handler: makeAssetHandler(SETUP_RUNTIME_PATH, 'workspace-init/setup_runtime.py'),
         }),
         'advisor-agent: setup-runtime asset endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: WATCHLIST_ENDPOINT,
+          handler: makeAssetHandler(WATCHLIST_PATH, 'workspace-init/manage_watchlist.py'),
+        }),
+        'advisor-agent: watchlist-manager asset endpoint',
       )
     })
     // 在 tools 语境下建 tushare MCP 连接桥，并在 URL 变化时热切换（立即生效）。

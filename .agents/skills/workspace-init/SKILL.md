@@ -44,7 +44,7 @@ description: 工作区初始化技能。当用户要在「一个空目录 / 新�
 | 文件 | 归属技能 | 用途 |
 |---|---|---|
 | `output/portfolio/holdings.yaml` | portfolio-tracker | 持仓清单（空 holdings，含字段注释） |
-| `output/watchlist/watchlist.yaml` | w-bottom-screener / momentum-rotation | 观察仓标的池（两技能共用，含 600519.SH 示例） |
+| `output/watchlist/watchlist.yaml` | watchlist-manager（写）/ w-bottom-screener / momentum-rotation（读） | 观察仓标的池（含 600519.SH 示例） |
 | `output/skill-state/update-manifest.yaml` | daily-update | 知识资产更新状态（last_update 为空） |
 | `output/copy-trade/alias-map.override.yaml` | copy-trade | 别名→标的映射占位 |
 | `knowledge/index.md` | （个股知识库） | 清单索引 |
@@ -85,6 +85,7 @@ python src/workspace-init/setup_runtime.py --target D:/my-advisor
   - 个股估值研报 → `stock-valuation`（写 `output/reports/`）
   - W底形态筛选 → `w-bottom-screener`（读 `output/watchlist/`、写 `output/w-bottom/`）
   - 中期动量轮动 → `momentum-rotation`（读 `output/watchlist/`、写 `output/momentum/`）
+  - 观察仓清单维护 → `watchlist-manager`（写 `output/watchlist/`，是观察仓的唯一写入口；上面两个筛选技能只读）
   - 持仓复核 → `portfolio-tracker`（读/写 `output/portfolio/holdings.yaml`）
   - 景气行业快照 → `prosperity-analysis`（写 `output/sectors/`）
   - 知识更新周期 → `daily-update`（读/写 `output/skill-state/update-manifest.yaml`）

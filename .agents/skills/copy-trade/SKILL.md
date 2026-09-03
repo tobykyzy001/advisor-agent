@@ -97,6 +97,7 @@ python .agents/skills/copy-trade/scripts/backtest.py --period 2026-08-14..2026-0
 - 单只标的"贵不贵/怎么估" → `stock-valuation`（本技能第 5 步复用它的口径）。
 - 行业景气上/下行、顺/逆周期 → `prosperity-analysis`。
 - 自己持仓的持续复核 → `portfolio-tracker`（本技能输出的是"别人作业"，不代表你的持仓）。
+- 挖到值得盯但其价位未到的标的 → `watchlist-manager`（加入观察仓持续跟踪：`manage_watchlist.py add <code> --source copy-trade`）。
 - 知识资产/景气快照的周期更新 → `daily-update`。
 
 ## 生成数据 vs 技能方法（提交边界，重要）

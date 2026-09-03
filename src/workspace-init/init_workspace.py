@@ -37,7 +37,7 @@ README_MD = """\
 | W底搜索（w-bottom-screener） | `output/w-bottom/` | W底筛选取数缓存与命中报告 |
 | 中期动量轮动（momentum-rotation） | `output/momentum/` | 动量排名取数缓存、组合信号报告、持仓状态 |
 | B站视频总结（bili-video-summary） | `output/videos/` | 视频转录产物：文字稿 / 元数据 / 音频 / whisper 模型缓存 |
-| 观察仓 | `output/watchlist/` | 观察仓标的池清单（W底筛选的输入） |
+| 观察仓（watchlist-manager） | `output/watchlist/` | 观察仓标的池清单（本技能增删改；W底/动量筛选只读） |
 | 持仓（portfolio-tracker） | `output/portfolio/` | 持仓清单 `holdings.yaml` |
 | 个股知识库 | `knowledge/` | 清单索引 + 每票一份分析文件（长期沉淀） |
 | 知识更新状态（daily-update） | `output/skill-state/` | 各知识资产的上次更新时间 |
@@ -46,7 +46,7 @@ README_MD = """\
 
 1. 先回填个人清单：
    - 持仓 → 编辑 `output/portfolio/holdings.yaml`
-   - 观察仓 → 编辑 `output/watchlist/watchlist.yaml`
+   - 观察仓 → 用 watchlist-manager 的 `manage_watchlist.py add` 加入（或手编 `output/watchlist/watchlist.yaml`）
 2. 新增个股知识：在 `knowledge/stocks/` 下按 `_template.md` 复制一份，命名 `<ts_code>.md`
    （如 `600519.SH.md`），完成后在 `knowledge/index.md` 登记一行。
 3. 跑各技能脚本，产物自动落到对应 `output/` 子目录。
@@ -96,14 +96,17 @@ holdings: []
 """
 
 WATCHLIST_YAML = """\
-# 观察仓清单：W底放量筛选的标的池（本文件已 gitignore，不入库）。
+# 观察仓清单：w-bottom-screener / momentum-rotation 共用的标的池（本文件已 gitignore，不入库）。
+# 增删改优先用 watchlist-manager 技能（manage_watchlist.py add/set/rm，代码自动规范化），也可手编：
+#   python manage_watchlist.py add 600519 --name 贵州茅台 --note 等回调 --source stock-valuation
 # 每条一行；ts_code 用 tushare 格式（A股带 .SH/.SZ/.BJ，港股如 00700.HK）。
-# market: A | HK；note 可选，纯展示。
+# market: A | HK；note 可选，纯展示；其他英文键为各工具委托写入的 param（如 BS/MR）。
+# 子字段 2 空格缩进（与 PyYAML safe_dump 同风格，量化核心 save_watchlist 写出的清单直接兼容）。
 watchlist:
-  - ts_code: "600519.SH"
-    name: "贵州茅台"
-    market: A
-    note: "示例，可按需增删"
+- ts_code: "600519.SH"
+  name: "贵州茅台"
+  market: A
+  note: "示例，可按需增删"
 """
 
 SKILL_STATE_YAML = """\

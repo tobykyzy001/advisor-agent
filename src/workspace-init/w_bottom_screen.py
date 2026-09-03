@@ -97,11 +97,13 @@ class WatchItem:
 
 
 _ITEM_KEY = re.compile(r"^\s*-\s+ts_code:\s*(.+?)\s*$")
-_KEY = re.compile(r"^\s{4}(\w+):\s*(.*)$")
+# 子键行：任意缩进（≥1 空格）都收——标准格式为 2 空格（与 PyYAML safe_dump 同风格，
+# 量化核心 save_watchlist 写出的清单可直接读），也宽容兼容旧 4 空格手编格式。
+_KEY = re.compile(r"^\s+(\w+):\s*(.*)$")
 
 
 def load_watchlist(path: Path | None = None) -> list[WatchItem]:
-    """读取 watchlist.yaml（极简解析，仅支持规范缩进结构）。缺失则报错引导。"""
+    """读取 watchlist.yaml（极简解析：条目行认 `- ts_code:`，子键行认任意缩进）。缺失则报错引导。"""
     p = path or Path("output/watchlist/watchlist.yaml")
     if not p.exists():
         raise FileNotFoundError(

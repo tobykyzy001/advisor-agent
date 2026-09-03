@@ -186,7 +186,9 @@ class Decision:
 # ═══════════════════════════════════════════════════════════════════════════
 
 _ITEM_KEY = re.compile(r"^\s*-\s+ts_code:\s*(.+?)\s*$")
-_KEY = re.compile(r"^\s{4}(\w+):\s*(.*)$")
+# 子键行：任意缩进（≥1 空格）都收——标准格式为 2 空格（与 PyYAML safe_dump 同风格，
+# 量化核心 save_watchlist 写出的清单可直接读），也宽容兼容旧 4 空格手编格式。
+_KEY = re.compile(r"^\s+(\w+):\s*(.*)$")
 
 
 def load_watchlist(path: Path | None = None) -> list[WatchItem]:

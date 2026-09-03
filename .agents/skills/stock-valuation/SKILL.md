@@ -65,6 +65,10 @@ description: 单一个股估值分析方法论。当用户要求对某一只具�
    - 周期资源 → **等商品价格/库存/产能利用率的拐点**。
    - 稳定价值 → **等经营现金流 + 分红能否持续**。
 
+> 结论为「贵/高估/等买点」但标的值得持续跟踪时：建议用 `watchlist-manager` 技能加入观察仓
+> （`manage_watchlist.py add <code> --note <等什么/目标价> --source stock-valuation`），
+> 后续由 w-bottom-screener / momentum-rotation 等对观察池做信号筛选。
+
 ## 输出格式（结构化，供研报/后续选股用）
 ```
 标的: <代码/名称>  <数据时点>

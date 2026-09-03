@@ -53,7 +53,7 @@ python src/workspace-init/w_bottom_screen.py --watchlist output/watchlist/watchl
 > `python -m quantify.cli w-bottom --plan`）。
 
 - 观察仓清单在 `output/watchlist/watchlist.yaml`（已被 gitignore，不入库，属个人关注信息）。
-- 清单模板由 `workspace-init` 技能生成（`init_workspace.py` 的 WATCHLIST_YAML 是唯一模板真源），本技能只读不写。
+- 清单模板由 `workspace-init` 技能生成（`init_workspace.py` 的 WATCHLIST_YAML 是唯一模板真源）；本技能对清单**只读不写**——往池子加/删标的用 `watchlist-manager`（`manage_watchlist.py add/rm`），命中形态后如需留痕也**委托**它写入（`manage_watchlist.py set <code> --BS B --BS_DATE <确认日>`），不自己改这份 yaml。
 
 ### 第 2 步：agent 会话内取数
 
@@ -78,6 +78,7 @@ python src/workspace-init/w_bottom_screen.py --watchlist output/watchlist/watchl
 - 「这个形态信号值不值得买、贵不贵」→ `stock-valuation`（本技能只给形态，估值另算）。
 - 行业景气上/下行 → `prosperity-analysis`。
 - 自己持仓的持续跟踪 → `portfolio-tracker`（观察仓 ≠ 持仓，本技能不碰持仓）。
+- 往观察仓加/删标的、或命中后给条目留 param → `watchlist-manager`（本技能对清单只读，写入一律委托它：`set <code> --BS B`）。
 - 知识资产/景气快照周期更新 → `daily-update`。
 
 ## 生成数据 vs 技能方法（提交边界）

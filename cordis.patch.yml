@@ -15,5 +15,6 @@
           - copy-trade
           - workspace-init
           - w-bottom-screener
+          - watchlist-manager
           - bili-video-summary
         defaultTarget: new

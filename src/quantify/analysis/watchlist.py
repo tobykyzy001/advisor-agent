@@ -7,10 +7,13 @@
 
 清单格式：
     watchlist:
-      - ts_code: "600519.SH"
-        name: "贵州茅台"
-        market: "A"
-        note: "举例"
+    - ts_code: "600519.SH"
+      name: "贵州茅台"
+      market: "A"
+      note: "举例"
+
+（子字段 2 空格缩进，与 yaml.safe_dump 同风格；各消费方的极简解析与
+watchlist-manager 的 manage_watchlist.py 均按此契约读写，旧 4 空格手编文件也宽容可读。）
 
 字段说明：
 - ts_code：tushare 代码（A股带 .SH/.SZ/.BJ，港股如 00700.HK）。
