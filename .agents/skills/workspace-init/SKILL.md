@@ -52,22 +52,24 @@ description: 工作区初始化技能。当用户要在「一个空目录 / 新�
 
 ## 使用
 
-脚本唯一真源在 **`src/workspace-init/init_workspace.py`**（随插件包分发），真实逻辑只改这一份。
+脚本真源在 **`src/workspace-init/`**（随插件包分发），真实逻辑只改这些文件：
 
 ```bash
-# 在当前目录初始化
+# 1) 在当前目录初始化（目录骨架 + 模板）
 python src/workspace-init/init_workspace.py
-
-# 在指定空目录初始化（推荐：全新项目骨架）
+# 2) 在指定空目录初始化（推荐：全新项目骨架）
 python src/workspace-init/init_workspace.py --target D:/my-advisor
-
-# 先看会做什么，不落地
+# 3) 先看会做什么，不落地
 python src/workspace-init/init_workspace.py --target D:/my-advisor --dry-run
+
+# 4) 准备运行环境（建工作区持久 .venv + 装 yt-dlp/faster-whisper，供 B站视频总结用）
+python src/workspace-init/setup_runtime.py --target D:/my-advisor
+#    可选 --with-opencc（繁转简） / --check（只查不装） / --force（强制重装）
 ```
 
 **插件安装环境下**（无本仓库源码）：脚本由宿主静态端点分发，URL 为
-`http://127.0.0.1:<port>/plugins/advisor-agent/assets/workspace-init/init_workspace.py`，
-agent 下载后执行即可；客户端投递的指令会带上该地址。
+`http://127.0.0.1:<port>/plugins/advisor-agent/assets/workspace-init/init_workspace.py` 与
+`.../assets/workspace-init/setup_runtime.py`，agent 下载后执行即可；客户端投递的指令会带上该地址。
 
 ## 幂等与安全
 
@@ -77,7 +79,7 @@ agent 下载后执行即可；客户端投递的指令会带上该地址。
 
 ## 与其它技能的分工
 
-- 本技能**只搭骨架、不跑业务**。真正读写这些目录的是：
+- 本技能**只搭骨架、装环境、不跑业务**。真正读写这些目录的是：
   - 抄作业回测产物 → `copy-trade`（写 `output/copy-trade/`）
   - 个股估值研报 → `stock-valuation`（写 `output/reports/`）
   - W底形态筛选 → `w-bottom-screener`（读 `output/watchlist/`、写 `output/w-bottom/`）
@@ -86,6 +88,7 @@ agent 下载后执行即可；客户端投递的指令会带上该地址。
   - 景气行业快照 → `prosperity-analysis`（写 `output/sectors/`）
   - 知识更新周期 → `daily-update`（读/写 `output/skill-state/update-manifest.yaml`）
   - 个股知识沉淀 → 本技能生成的 `knowledge/`（后续由 agent 按 `stock-valuation` 输出格式回填单票文件）
+  - B站视频总结 → `bili-video-summary`（读/写 `output/videos/`；**其运行环境（.venv + yt-dlp/faster-whisper）由本技能的 `setup_runtime.py` 准备**）
 
 ## 生成数据 vs 技能方法（提交边界）
 

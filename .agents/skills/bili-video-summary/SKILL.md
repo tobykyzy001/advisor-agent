@@ -9,10 +9,13 @@ description: B站视频的「拉取→转录→分析」流水线。当用户发
 
 ## 使用方式
 
-用**系统 python** 运行脚本（不是项目 `.venv`——yt-dlp / faster-whisper 装在系统环境；这与 daily-update 的约定一致）：
+用**工作区 `.venv` 里的 python** 运行脚本（不是系统裸 python——依赖装在 `.venv`，且不在用户目录、不撞权限），也不是本项目 `.venv`：
 
 ```bash
-python .agents/skills/bili-video-summary/scripts/transcribe_video.py "<视频URL或BV号>"
+# 环境由 workspace-init 的 setup_runtime.py 一次性准备（建 .venv + 装 yt-dlp/faster-whisper）：
+#   python scripts/setup_runtime.py --target <工作区>
+# 之后用工作区 .venv 的 python 跑脚本：
+.venv/Scripts/python.exe scripts/transcribe_video.py "<视频URL或BV号>"
 # 可选：--model small  --force（已有文字稿但想重跑） --prompt "自定义转录引导词"
 ```
 
@@ -33,13 +36,13 @@ python .agents/skills/bili-video-summary/scripts/transcribe_video.py "<视频URL
 
 首次运行会下载 whisper 模型（small 约 460MB，之后有缓存，且支持 `--model` 切换）。
 
-缺依赖时提示用户：`pip install yt-dlp faster-whisper`（可选 `opencc-python-reimplemented`，装了会自动把繁体转简）。
+依赖由 **workspace-init 的 `setup_runtime.py`** 负责准备（建工作区 `.venv` + `pip install yt-dlp faster-whisper`，可选 `opencc-python-reimplemented` 繁转简）。**本技能自身不装环境**：缺依赖时不要现场 `pip install --target` 或 monkeypatch tempfile，而是指引 agent 先跑 `setup_runtime.py` 建好 `.venv`，再用 `.venv/Scripts/python.exe` 跑本脚本。
 
 ## 模型缓存与幂等（投研工具面板投递时同样适用）
 
 - **模型缓存收拢到工作区**：`workspace-init` 生成的骨架里已有 `output/videos/models/` 目录，专用于收拢 whisper 模型。若想固定模型位置（而非走 faster-whisper 默认的 `~/.cache/huggingface`），在运行脚本前设置环境变量 `HF_HOME=<工作区>/output/videos/models`（脚本内 `HF_ENDPOINT` / `HF_HUB_DISABLE_XET` 已内置，无需重复设）。首次无模型则自动从 `hf-mirror.com` 下载，「有模型就直接用、没有才下载」。
 - **幂等**：脚本按 BV 号建目录 `output/videos/<BV号>/`，若 `transcript.txt` 已存在会**跳过转录直接复用**（`--force` 可强制重跑）；音频 `audio.*` 同理复用。因此对同一视频重复投递不会重复下载/转录。
-- **依赖检查**：跑脚本前先确认目标 python 环境已装 `yt-dlp` 与 `faster-whisper`，缺则先 `pip install`（普通环境，非项目 `.venv`）。
+- **依赖检查**：跑脚本前先确认工作区 `.venv` 已装 `yt-dlp` 与 `faster-whisper`（`.venv/Scripts/python.exe scripts/transcribe_video.py --selfcheck` 看 `ready`）。缺则由 workspace-init 的 `setup_runtime.py` 建 `.venv` 并装依赖，本技能不自行装环境。
 
 ## 分析流程
 
@@ -54,7 +57,8 @@ python .agents/skills/bili-video-summary/scripts/transcribe_video.py "<视频URL
 
 ## 与其它技能的分工
 
-- 本技能只负责**拿到文字稿**；分析中需要个股估值、行业景气判断时，方法分别复用 `stock-valuation`、`prosperity-analysis`，数据走 tushare MCP，口径保持一致。
+- 本技能只负责**拿到文字稿并做分析**；分析中需要个股估值、行业景气判断时，方法分别复用 `stock-valuation`、`prosperity-analysis`，数据走 tushare MCP，口径保持一致。
+- **环境准备（建工作区 .venv + 装 yt-dlp/faster-whisper）归 `workspace-init` 的 `setup_runtime.py`**：本技能只「用就绪环境跑转录 → 分析」，不装环境。
 - 不属于 `daily-update` 管理的知识资产（它是一次性取数工具，无更新周期）；产物也不入库，无需登记。
 
 已用 `BV1uEtH6mEY6`（李大霄《提醒11月3日对美股的风险》，4分20秒无字幕视频）实测跑通全流程；`BV19i4X6kEFx`（史诗级韭菜《本周经济数据分析》，约10分钟）验证了 buvid3 cookie 对 412 的修复。

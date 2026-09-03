@@ -10,10 +10,17 @@
         [--out output/videos] [--models output/videos/models]
     python transcribe_video.py --selfcheck    # 只检查依赖是否就绪，不下载不转录
 
-依赖（装在系统 python，项目 .venv 不需要）：
-    pip install yt-dlp faster-whisper
+依赖（装在工作区持久 `.venv`，用 `.venv/Scripts/python.exe` 运行本脚本）：
+    # 一键建 .venv 并装依赖（由 workspace-init 的 setup_runtime.py 负责，先跑它）：
+    python setup_runtime.py --target <工作区目录>
+    # 或手工：
+    python -m venv .venv && .venv/Scripts/pip install yt-dlp faster-whisper
     # 可选：装了 opencc 会把转录结果再转一版简体
-    pip install opencc-python-reimplemented
+    .venv/Scripts/pip install opencc-python-reimplemented
+
+> 注意：本脚本**不装依赖、不建环境**。缺依赖时请先跑 workspace-init 的 setup_runtime.py
+> 准备 `.venv`，再用 `.venv/Scripts/python.exe` 运行本脚本；不要临时 `pip install --target`
+> 或 monkeypatch tempfile 去绕过系统 python 不可写——那会反复失败。
 
 产物（默认写到 output/videos/<BV号>/，该目录已被 gitignore）：
     audio.*           原始音频（m4a，无需 ffmpeg 转 mp3）
@@ -180,12 +187,19 @@ def main() -> None:
     if args.selfcheck:
         deps = check_dependencies()
         ok = all(v == "ok" for v in [deps["yt_dlp"], deps["faster_whisper"]])
+        hint = ""
+        if not ok:
+            hint = (
+                "依赖未就绪：请先用 workspace-init 的 setup_runtime.py 建工作区 .venv 并装依赖"
+                "（python setup_runtime.py --target <工作区>），再用 .venv/Scripts/python.exe 运行本脚本。"
+            )
         print(json.dumps({
             "deps": deps,
             "hf_endpoint": os.environ.get("HF_ENDPOINT"),
             "hf_home": os.environ.get("HF_HOME"),
             "models_dir_exists": Path(args.models).resolve().is_dir(),
             "ready": ok,
+            "hint": hint,
         }, ensure_ascii=False, indent=2))
         sys.exit(0 if ok else 1)
 
