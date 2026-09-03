@@ -122,11 +122,22 @@ def download_audio(url: str, out_root: Path) -> tuple[Path, dict]:
     return matches[0], meta
 
 
+# 各档模型体积与速度预期（cpu int8，普通话，粗略估值），用于打印时长提示。
+MODEL_COSTS = {
+    "tiny": {"size_mb": 75, "speed": "约 1~2 倍音频时长"},
+    "base": {"size_mb": 145, "speed": "约 0.6~1.2 倍音频时长"},
+    "small": {"size_mb": 460, "speed": "约 0.4~0.8 倍音频时长"},
+    "medium": {"size_mb": 1500, "speed": "约 0.2~0.4 倍音频时长"},
+}
+
+
 def transcribe(audio_path: Path, model_size: str, prompt: str) -> list[dict]:
     """faster-whisper 转录；首次运行会走镜像下载模型（small 约 460MB）。"""
     from faster_whisper import WhisperModel
 
+    print(f"  [2/4] 加载 whisper 模型 {model_size}（cpu int8）…", flush=True)
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    print(f"  [3/4] 转录中（VAD 过滤；长视频请耐心等待）…", flush=True)
     segments, _ = model.transcribe(
         str(audio_path), language="zh", initial_prompt=prompt, vad_filter=True
     )
@@ -146,7 +157,11 @@ def to_simplified(text: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="B站视频音频下载 + whisper 转录（自包含）")
     parser.add_argument("video", nargs="?", help="B站视频 URL、b23.tv 短链或 BV 号")
-    parser.add_argument("--model", default="small", help="whisper 模型，默认 small（首次下载约460MB）")
+    parser.add_argument(
+        "--model",
+        default="small",
+        help="whisper 模型：tiny(最快)/base/small(默认,更准)/medium；越小越快、语音越清晰可越小模型",
+    )
     parser.add_argument("--out", default="output/videos", help="输出根目录，默认 output/videos")
     parser.add_argument(
         "--models",
@@ -179,6 +194,7 @@ def main() -> None:
 
     out_root = Path(args.out)
     url = normalize_url(args.video)
+    print(f"  [1/4] 解析并下载音频（B站反爬已内置）…", flush=True)
     audio_path, meta = download_audio(url, out_root)
     video_dir = audio_path.parent
     transcript_txt = video_dir / "transcript.txt"
@@ -188,15 +204,24 @@ def main() -> None:
     )
 
     if args.force or not transcript_txt.exists():
-        print(f"转录中：{meta['title']}（模型 {args.model}，首次需下载模型）", flush=True)
+        cost = MODEL_COSTS.get(args.model)
+        size_txt = f"约 {cost['size_mb']}MB" if cost else "体积未知"
+        print(
+            f"准备转录：{meta['title']}（模型 {args.model}，{size_txt}）\n"
+            f"  首次运行将从镜像下载模型（联网下载，耗时视带宽而定）；"
+            f"之后复用本地缓存不再下载。\n"
+            f"  转录时长约 {cost['speed'] if cost else '与音频时长相当'}，请耐心等待。",
+            flush=True,
+        )
         segments = transcribe(audio_path, args.model, args.prompt)
         (video_dir / "transcript.json").write_text(
             json.dumps(segments, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         lines = [f"[{s['start']:6.1f}s] {to_simplified(s['text'])}" for s in segments]
         transcript_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"  [4/4] 转录完成，共 {len(lines)} 段", flush=True)
     else:
-        print("已有文字稿，跳过转录（--force 可重跑）")
+        print("  已有文字稿，跳过转录（--force 可重跑）", flush=True)
 
     print(f"\n完成：{meta['title']} | UP主：{meta['uploader']} | 时长：{meta['duration']}s")
     print(f"文字稿：{transcript_txt}")
