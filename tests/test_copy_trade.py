@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".agents/skills/copy-trade/scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".agents/skills/copy-trade/scripts"))
 
 from fetch_homework import parse_messages, _clean_body, _clean_speaker  # noqa: E402
 from symbol_map import resolve_alias, load_map, _parse_override  # noqa: E402
