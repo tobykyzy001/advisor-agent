@@ -74,6 +74,8 @@ fail-closed（数据安全）：
         --state output/momentum/state.json
         —— 直接读库跑选股排名/过滤/调仓，产出组合信号与持仓（T 日收盘价成交），
         并回写持仓状态 state.json；报告落在 output/momentum/plan_<时间戳>.md。
+        标准输出只打印摘要（大盘状态/目标持仓）——「逐只动量与过滤」全池明细
+        仅写入报告文件、不打印到标准输出（观察池几十上百只时逐只长表会占满会话上下文）。
   （--plan 仅作诊断：打印库内每只的根数/最后交易日/待补区间，不取数。）
 
 已有持仓通过 `--state` 传入（上一轮信号输出会自动回写 state.json；首次运行无 state 则视为空仓）。
@@ -630,8 +632,11 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
     last_dates = [s.bars[-1].date for s in series_list if s.bars]
     signal_date = max(last_dates).isoformat() if last_dates else ""
 
-    # 组装报告
+    # 组装报告：摘要（lines）随标准输出打印、进入会话上下文；
+    # 「逐只动量与过滤」全池明细（detail_lines）只写入 md 报告，标准输出仅提示文件位置
+    # ——观察池几十上百只时，逐只长表对会话是纯 token 损耗，决策只看摘要即可。
     lines: list[str] = []
+    detail_lines: list[str] = []
     lines.append("# 中期动量轮动策略 · 组合信号")
     lines.append("")
     lines.append(f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -685,16 +690,17 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
     lines.append(f"> 流动性约束：单票下单量 ≤ 信号日成交量 × {p.max_trade_vol_ratio:.0%}。")
     lines.append("")
 
-    # 合格标的明细（过滤表）
-    lines.append("## 逐只动量与过滤")
-    lines.append("")
-    lines.append("| 代码 | 名称 | mom20 | mom120 | mom60 | MA120 | 现价 | 偏离MA20 | 近5日 | 合格 | 快榜 | 慢榜 | 过滤原因 |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    # 逐只动量与过滤明细（全池过滤表）：只写入 md 报告，不打印到标准输出——
+    # 标准输出仅在末尾提示该章节的文件位置（见下方 print）。
+    detail_lines.append("## 逐只动量与过滤")
+    detail_lines.append("")
+    detail_lines.append("| 代码 | 名称 | mom20 | mom120 | mom60 | MA120 | 现价 | 偏离MA20 | 近5日 | 合格 | 快榜 | 慢榜 | 过滤原因 |")
+    detail_lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for d in sorted(decisions, key=lambda x: x.ts_code):
         if not d.has_history:
-            lines.append(f"| {d.ts_code} | {d.name} | - | - | - | - | - | - | - | 否 | - | - | {'；'.join(d.filter_reasons)} |")
+            detail_lines.append(f"| {d.ts_code} | {d.name} | - | - | - | - | - | - | - | 否 | - | - | {'；'.join(d.filter_reasons)} |")
             continue
-        lines.append(
+        detail_lines.append(
             f"| {d.ts_code} | {d.name} | {d.mom20:.1%} | {d.mom120:.1%} | {d.mom60:.1%} | {d.ma120:.2f} "
             f"| {d.close:.2f} | {d.dev_ma20:.1%} | {d.rush5:.1%} | {'是' if d.qualified else '否'} "
             f"| {d.rank_fast or '-'} | {d.rank_slow or '-'} | {'；'.join(d.filter_reasons) or '-'} |"
@@ -702,7 +708,8 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
 
     out_path = out_dir / f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text("\n".join(lines), encoding="utf-8")
+    # md 报告 = 摘要 + 逐只明细（全量落盘，供人工查阅）
+    out_path.write_text("\n".join(lines + detail_lines), encoding="utf-8")
 
     # 回写 state.json（含新目标持仓与等权权重）
     new_positions: list[dict] = []
@@ -722,8 +729,11 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
     if state_path and write_plan:
         save_state(state_path, new_state)
 
+    # 标准输出只打摘要；「逐只动量与过滤」仅提示报告文件位置，不进会话上下文
     print("\n".join(lines))
-    print(f"\n报告已保存：{out_path}")
+    print(f"\n「逐只动量与过滤」明细（全池 {len(decisions)} 只）只写入报告文件、未打印到标准输出"
+          f"（避免长表占满会话上下文）。")
+    print(f"报告已保存：{out_path}")
     if not write_plan:
         print("[降级] STRATEGY_MOMENTUM_DECISION_MODE=decision_runs：仅产出决策快照，未回写持仓状态。")
     elif state_path:

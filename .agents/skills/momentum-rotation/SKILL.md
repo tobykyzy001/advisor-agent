@@ -100,7 +100,8 @@ python scripts/momentum_strategy.py \
   --state output/momentum/state.json
 ```
 
-- 输出 `output/momentum/plan_<时间戳>.md`：大盘状态、目标持仓（快榜/慢榜排名 + mom + 现价）、逐只过滤明细。
+- 输出 `output/momentum/plan_<时间戳>.md`（完整报告落盘）：大盘状态、目标持仓（快榜/慢榜排名 + mom + 现价）、逐只动量与过滤明细。
+- **标准输出只打印摘要**（大盘状态、目标持仓表等决策信息）：「逐只动量与过滤」全池明细**不进会话**——转达时仅提示报告 md 文件位置，勿整表复述（观察池几十上百只时逐只长表是纯 token 损耗）；用户要看逐只明细时让其直接打开该 md 文件。
 - 回写持仓状态 `output/momentum/state.json`（含 as_of / cash_pct / signal / target / positions），供下一轮「老仓优先」使用。
 - `--plan` 仅作诊断：打印每只的库内根数/最后交易日/待补区间，不取数。
 - 无面板直连时脚本就在仓库内 `src/workspace-init/`（面板场景则从端点下载到 `scripts/`，两条路径命令其余部分完全一致）。

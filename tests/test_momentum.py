@@ -554,3 +554,36 @@ def test_e2e_all_pool_codes_participate(tmp_path):
     st = json.loads(state.read_text(encoding="utf-8"))
     assert st["as_of"] == today.isoformat()   # 库内末根即今天
     assert set(st["target"]) == set(codes)    # 两只都参与选股（温和上涨全合格）
+
+
+def test_e2e_stdout_summary_detail_only_in_file(tmp_path, capsys):
+    """标准输出只打印摘要：「逐只动量与过滤」全池明细仅写入 md 报告、不进 stdout。
+
+    与 SKILL.md / 面板指引同一转达口径：stdout 给决策摘要 + 明细的文件位置提示，
+    逐只长表不进会话上下文（观察池大时是纯 token 损耗），完整明细落盘供人工查阅。
+    """
+    codes = ["F1.SH", "F2.SH", "F3.SH"]
+    watchlist = _write_watchlist(tmp_path, codes)
+    store = tmp_path / "store"
+    today = date.today()
+    # 温和上涨全合格：130 根、末根=今天
+    rows = [_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)]
+    _write_store(store, {c: rows for c in codes})
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(tmp_path / "state.json"),
+                 "--store", str(store), "--out-dir", str(tmp_path / "out")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # stdout：摘要决策信息 + 「逐只动量与过滤」的文件位置提示
+    assert "目标持仓" in out
+    assert "逐只动量与过滤" in out and "未打印到标准输出" in out
+    # stdout：明细表不出现（偏离MA20 / 过滤原因是明细表特有列，摘要的目标持仓表没有）
+    assert "偏离MA20" not in out
+    assert "过滤原因" not in out
+    # md 报告：完整保留「逐只动量与过滤」章节，全池逐只在列
+    plans = list((tmp_path / "out").glob("plan_*.md"))
+    assert plans
+    text = plans[0].read_text(encoding="utf-8")
+    assert "## 逐只动量与过滤" in text
+    assert "偏离MA20" in text and "过滤原因" in text
+    for c in codes:
+        assert c in text
