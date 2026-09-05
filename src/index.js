@@ -11,11 +11,13 @@
 //   enabledSkills  启用的 skill id 列表（对应 lib/client.js 内联注册表 ADVISOR_SKILLS）
 //   defaultTarget  点「运行」的默认投递目标：'new'（新开会话，默认）| 'current'（当前会话）
 //                  表单内可临时覆盖。
+//   tushareToken   tushare pro token：配置后由面板随工具指令以 --token 参数传给
+//                  fetch_quotes.py（脚本侧最高优先级）；留空回退环境变量 TUSHARE_TOKEN
+//                  / 工作区 .env。仅存于宿主设置，不入仓库。
 
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createTushareMcpBridge } from './mcp-tushare.js'
 
 const require = createRequire(import.meta.url)
 
@@ -48,6 +50,25 @@ const SETUP_RUNTIME_PATH = fileURLToPath(new URL('./workspace-init/setup_runtime
 // watchlist-manager 技能的脚本真源，供 stock-valuation / copy-trade 等流程委托调用。
 export const WATCHLIST_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/manage_watchlist.py'
 const WATCHLIST_PATH = fileURLToPath(new URL('./workspace-init/manage_watchlist.py', import.meta.url))
+// 统一行情取数 CLI（自包含脚本）的静态分发端点：直连 tushare pro REST API，
+// 对照本地 CSV 行情库 output/quotes-store/ 增量刷库 / 出估值快照。
+// w-bottom-screener / momentum-rotation 的取数步骤，以及估值、持仓复核、
+// 论据核查等即取即用场景统一走它（fetch_quotes.py --snapshot）。
+export const FETCH_QUOTES_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/fetch_quotes.py'
+const FETCH_QUOTES_PATH = fileURLToPath(new URL('./workspace-init/fetch_quotes.py', import.meta.url))
+// 飞神交易逻辑（非脚本型方法论资产）的静态分发端点：目标工作区可能是空目录，
+// 会话里没有 .agents/skills，因此不能靠 skill 调用；下载这三份 Markdown 后按其执行。
+export const FEISHEN_SKILL_ENDPOINT = '/plugins/advisor-agent/assets/feishen-trading-logic/SKILL.md'
+export const FEISHEN_RULEBOOK_ENDPOINT = '/plugins/advisor-agent/assets/feishen-trading-logic/feishen-rulebook.md'
+export const FEISHEN_ALIASES_ENDPOINT = '/plugins/advisor-agent/assets/feishen-trading-logic/feishen-aliases.md'
+const FEISHEN_SKILL_PATH = fileURLToPath(new URL('../.agents/skills/feishen-trading-logic/SKILL.md', import.meta.url))
+const FEISHEN_RULEBOOK_PATH = fileURLToPath(new URL('../.agents/skills/feishen-trading-logic/references/feishen-rulebook.md', import.meta.url))
+const FEISHEN_ALIASES_PATH = fileURLToPath(new URL('../.agents/skills/feishen-trading-logic/references/feishen-aliases.md', import.meta.url))
+const FEISHEN_ASSETS = [
+  [FEISHEN_SKILL_ENDPOINT, FEISHEN_SKILL_PATH, 'feishen-trading-logic/SKILL.md'],
+  [FEISHEN_RULEBOOK_ENDPOINT, FEISHEN_RULEBOOK_PATH, 'feishen-trading-logic/feishen-rulebook.md'],
+  [FEISHEN_ALIASES_ENDPOINT, FEISHEN_ALIASES_PATH, 'feishen-trading-logic/feishen-aliases.md'],
+]
 
 let Schema = null
 try {
@@ -57,13 +78,13 @@ try {
 }
 
 // 默认启用的技能固定来自 lib/client.js 内联注册表 ADVISOR_SKILLS 的 id 集合；若丢失，用最小兜底。
-export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'momentum-rotation', 'bili-video-summary']
+export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'momentum-rotation', 'bili-video-summary', 'feishen-trading-logic']
 
 const defaults = Object.freeze({
   enabled: true,
   enabledSkills: DEFAULT_ENABLED_SKILLS,
   defaultTarget: 'new',
-  tushareMcpUrl: '',
+  tushareToken: '',
 })
 
 function publicConfig(config = {}) {
@@ -78,7 +99,7 @@ function publicConfig(config = {}) {
       return [...merged]
     })(),
     defaultTarget: config.defaultTarget === 'current' ? 'current' : 'new',
-    tushareMcpUrl: typeof config.tushareMcpUrl === 'string' ? config.tushareMcpUrl : '',
+    tushareToken: typeof config.tushareToken === 'string' ? config.tushareToken : '',
   }
 }
 
@@ -101,9 +122,9 @@ export const Config = Schema
         Schema.const('new').description('新开会话'),
         Schema.const('current').description('当前会话'),
       ]).default('new').description('点击「运行」后默认把技能指令投递到哪里（表单内可临时切换）'),
-      tushareMcpUrl: Schema.string().default('')
-        .role('secret')
-        .description('tushare MCP 完整 URL（含 token，形如 http://…/dingall?token=…）；保存后立即生效，留空则断开'),
+      tushareToken: Schema.string().default('')
+        .description('tushare pro token：配置后随工具指令以 --token 参数传给 fetch_quotes.py；'
+          + '留空回退环境变量 TUSHARE_TOKEN / 工作区 .env'),
     }).description('投研工具：以表单化方式调用投顾技能（个股估值等）')
   : null
 
@@ -175,8 +196,8 @@ export function createConfigHandler(settings) {
   }
 }
 
-// 静态脚本下载端点（泛化）：仅回环、仅 GET，返回随包分发的 Python 脚本原文。
-function makeAssetHandler(filePath, label) {
+// 静态资产下载端点（泛化）：仅回环、仅 GET，返回随包分发的脚本/方法论文本。
+function makeAssetHandler(filePath, label, contentType = 'text/x-python; charset=utf-8') {
   const cached = (() => {
     try {
       return readFileSync(filePath, 'utf8')
@@ -198,7 +219,7 @@ function makeAssetHandler(filePath, label) {
       return
     }
     res.writeHead(200, {
-      'content-type': 'text/x-python; charset=utf-8',
+      'content-type': contentType,
       'cache-control': 'no-store',
       'content-length': Buffer.byteLength(cached),
     })
@@ -273,26 +294,24 @@ function mount(ctx, config = {}) {
         }),
         'advisor-agent: watchlist-manager asset endpoint',
       )
-    })
-    // 在 tools 语境下建 tushare MCP 连接桥，并在 URL 变化时热切换（立即生效）。
-    ctx.inject(['tools'], (toolsCtx) => {
-      const bridge = createTushareMcpBridge(toolsCtx)
-      toolsCtx.effect(() => () => bridge.dispose(), 'advisor-agent: tushare mcp bridge')
-
-      // 首次挂载：用当前配置里的 URL 连接一次（若已填）。
-      let lastUrl = settings.get().tushareMcpUrl
-      if (typeof lastUrl === 'string' && lastUrl.trim() !== '') {
-        void bridge.applyUrl(lastUrl)
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: FETCH_QUOTES_ENDPOINT,
+          handler: makeAssetHandler(FETCH_QUOTES_PATH, 'workspace-init/fetch_quotes.py'),
+        }),
+        'advisor-agent: fetch-quotes asset endpoint',
+      )
+      for (const [path, filePath, label] of FEISHEN_ASSETS) {
+        httpCtx.effect(
+          () => httpCtx.webServer.register({
+            kind: 'exact',
+            path,
+            handler: makeAssetHandler(filePath, label, 'text/markdown; charset=utf-8'),
+          }),
+          `advisor-agent: ${label} asset endpoint`,
+        )
       }
-
-      // 订阅设置变化：URL 改变 → 立即重连（保存即生效）。
-      const offWatch = settings.watch((next, prev) => {
-        const nextUrl = next?.tushareMcpUrl
-        const prevUrl = prev?.tushareMcpUrl
-        if (nextUrl === prevUrl) return
-        void bridge.applyUrl(typeof nextUrl === 'string' ? nextUrl : '')
-      })
-      toolsCtx.effect(() => offWatch, 'advisor-agent: tushare mcp url watch')
     })
   } else {
     logger.warn?.('advisor-agent: no ctx.inject, config endpoint not mounted')

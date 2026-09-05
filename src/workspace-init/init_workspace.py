@@ -2,8 +2,8 @@
 
 用途：
   在一个空目录（或任意目录）下，搭出三大工具（抄作业 / 个股分析 / W底搜索）以及
-  持仓 / 观察仓 / 个股知识库 / 知识更新状态 的运行时目录骨架，并写入各清单的模板文件
-  （含注释，用户可编辑）。后续各技能脚本默认读写这些目录，开箱即用。
+  持仓 / 观察仓 / 共享行情库 / 个股知识库 / 知识更新状态 的运行时目录骨架，并写入各清单
+  的模板文件（含注释，用户可编辑）。后续各技能脚本默认读写这些目录，开箱即用。
 
 设计约束：
   - 纯标准库（os / shutil / pathlib / argparse），零第三方依赖，可在任何 Python 3.11+ 环境运行。
@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -34,13 +33,32 @@ README_MD = """\
 |---|---|---|
 | 抄作业（copy-trade） | `output/copy-trade/` | 作业回测产物：原始HTML、解析消息流、回测报告、别名覆盖 |
 | 个股分析（stock-valuation） | `output/reports/` | 个股估值研报（`research_*.md`） |
-| W底搜索（w-bottom-screener） | `output/w-bottom/` | W底筛选取数缓存与命中报告 |
-| 中期动量轮动（momentum-rotation） | `output/momentum/` | 动量排名取数缓存、组合信号报告、持仓状态 |
+| W底搜索（w-bottom-screener） | `output/w-bottom/` | W底筛选命中报告 |
+| 中期动量轮动（momentum-rotation） | `output/momentum/` | 动量组合信号报告、持仓状态 |
+| 共享行情库 | `output/quotes-store/` | 每标的一份 `<ts_code>.csv` 日线库（`fetch_quotes.py` 刷库写回；W底/动量只读共用） |
 | B站视频总结（bili-video-summary） | `output/videos/` | 视频转录产物：文字稿 / 元数据 / 音频 / whisper 模型缓存 |
 | 观察仓（watchlist-manager） | `output/watchlist/` | 观察仓标的池清单（本技能增删改；W底/动量筛选只读） |
 | 持仓（portfolio-tracker） | `output/portfolio/` | 持仓清单 `holdings.yaml` |
 | 个股知识库 | `knowledge/` | 清单索引 + 每票一份分析文件（长期沉淀） |
 | 知识更新状态（daily-update） | `output/skill-state/` | 各知识资产的上次更新时间 |
+
+## 行情数据配置（tushare token）
+
+所有行情取数走 `scripts/fetch_quotes.py`（直连 tushare pro REST API，增量刷库到
+`output/quotes-store/`）。首次使用前需配置 token（https://tushare.pro/user/token 获取），
+在本目录创建 `.env` 文件写一行即可（已被 .gitignore 忽略，不入库）：
+
+```
+TUSHARE_TOKEN=你的token
+```
+
+或设为系统环境变量 `TUSHARE_TOKEN`，或直接在 DSH 投研工具面板「设置」里配置 tushare
+token（面板发起的工具会自动以 `--token` 参数带上，无需本文件）。常用命令：
+
+```
+python scripts/fetch_quotes.py --watchlist output/watchlist/watchlist.yaml --min-bars 121 --full-days 420   # 刷库
+python scripts/fetch_quotes.py --snapshot 600519.SH                                                        # 估值快照
+```
 
 ## 快速上手
 
@@ -183,6 +201,7 @@ DIRS = [
     "output/watchlist",
     "output/w-bottom",
     "output/momentum",
+    "output/quotes-store",
     "knowledge",
     "knowledge/stocks",
 ]

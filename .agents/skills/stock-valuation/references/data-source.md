@@ -1,14 +1,14 @@
 # 数据源直连方法与字段映射
 
-## 首选数据源：tushare MCP（agent 在会话内直接调用）
+## 首选数据源：fetch_quotes.py 快照（直连 tushare REST）
 
-通过 `mcp__tushareMcp__*` 工具直接取数（无需写脚本、无系统代理问题、字段稳定）。工具名即 tushare pro API 名：`daily`（日线）、`daily_basic`（每日估值指标）、`stock_basic`（名称/行业）、`fina_indicator`（财务指标）、`income`（利润表）、港股则 `hk_daily`/`hk_basic`。
+用 `python scripts/fetch_quotes.py --snapshot <代码>` 取数（脚本自包含纯标准库、绕过系统代理、字段稳定；工作区没有该脚本时从插件端点 `/plugins/advisor-agent/assets/workspace-init/fetch_quotes.py` 下载）。其字段来自 tushare pro REST API：`daily`（日线）+ `daily_basic`（每日估值指标），快照输出最新收盘/涨跌幅/换手/PE(TTM)/PE(静)/PB/总市值/流通市值/股息率(TTM)，并顺手增量写回本地行情库 `output/quotes-store/`；港股走 `hk_daily`（仅价量）。token 优先级：`--token` 参数 > 环境变量 `TUSHARE_TOKEN` > 工作区 `.env` 写 `TUSHARE_TOKEN=…`。
 
 - `ts_code` 格式（非 6 位数字）：沪市 `600519.SH` / 深市 `000333.SZ`（创业板 `300xxx.SZ`）/ 科创板 `688xxx.SH` / 北交所 `8xxxxx.BJ` / 港股 `00700.HK`。6 位代码需按交易所补后缀。
 
 ### 字段映射（技能字段 → tushare 工具/字段）
 
-| 技能字段 | 工具 | 字段 | 说明 |
+| 技能字段 | tushare 接口 | 字段 | 说明 |
 |---|---|---|---|
 | 名称 / 行业 | `stock_basic` | `name` / `industry` | |
 | 现价 | `daily_basic` | `close` | 也等价于 `daily.close` 最新行 |
@@ -29,12 +29,12 @@
 ### 口径与覆盖注意
 
 - **PE 三口径只有两档**：tushare 只给 `pe`(静态) 与 `pe_ttm`(TTM)，**没有腾讯源的「PE动/前瞻(年化)」**——做前瞻 PE 用 `pe_ttm` 或按前瞻盈利自行折算，勿硬找"动态 PE"。
-- **港股限制**：tushare MCP 侧港股仅 `hk_daily`（价/量）与 `hk_basic`（名称），**缺 PB/PE/市值/股息率**等估值字段；港股估值指标退回下方腾讯源。
-- 财务同比(`fina_indicator`)由报告期驱动，取最新已披露的 `end_date` 一行即可；绝对值(`income`)另行取。
+- **港股限制**：fetch_quotes.py 港股走 `hk_daily`（仅价/量），**缺 PB/PE/市值/股息率**等估值字段；港股估值指标退回下方腾讯源。
+- 财务同比/毛利率/ROE 类字段**不在快照输出里**：需要时退回下方东财源（含经营同比），或另行调 tushare `fina_indicator`（由报告期驱动，取最新已披露的 `end_date` 一行即可）。
 
 ---
 
-以下接口为**兜底方案**（tushare 不可用或需港股估值字段时）。原因：本机 `requests`/akshare 会读取 **Windows 系统代理**，而该代理对本机部分数据域名（东财 `82.push2.eastmoney.com` 等）不可达，会抛 `ProxyError` 并让 CLI 回退到 `LocalProvider` 示例数据；而 Git Bash 下的 `curl` **不读系统代理**，可直连这些公开接口。
+以下接口为**兜底方案**（fetch_quotes 不可用，或需港股估值字段/财务同比字段时）。原因：本机 `requests`/akshare 会读取 **Windows 系统代理**，而该代理对本机部分数据域名（东财 `82.push2.eastmoney.com` 等）不可达，会抛 `ProxyError` 并让 CLI 回退到 `LocalProvider` 示例数据；而 Git Bash 下的 `curl` **不读系统代理**，可直连这些公开接口。
 
 ## 可用接口（腾讯行情快照，实测可用）
 

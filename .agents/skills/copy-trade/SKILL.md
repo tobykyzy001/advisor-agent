@@ -21,7 +21,7 @@ description: 抄作业分析技能。当用户发来一个「群作业/看Ta」�
 ## 数据源约定
 
 - **作业内容**：来自用户给的链接，用脚本直连抓取（`scripts/fetch_homework.py`）。抓不到时提示用户提供原文/离线 HTML。
-- **行情/估值**：回测用 tushare MCP 的 `mcp__tushareMcp__daily`（历史日K，无频率限制）；"是否值得抄"的估值快照优先 `mcp__tushareMcp__daily_basic`（**注意：5 次/天限额、`rt_k` 实时接口无权限**），超限或失败就退化为"日K技术面 + 定性逻辑"，不硬凑。
+- **行情/估值**：回测日K与估值快照统一走 `fetch_quotes.py`（直连 tushare REST）：刷库模式 `--codes <清单> --store output/quotes-store` 把回测窗口日K增量写入本地行情库（幂等），快照模式 `--snapshot <代码>` 出最新收盘/PE/PB/市值（注意 daily_basic 类字段受 tushare 积分限流，失败时退化为"日K技术面 + 定性逻辑"，不硬凑）。
 - **时点必须标注**：所有行情/估值字段标接口返回的时点。
 
 ## 关键局限（必须先认清，否则回测会误导）
@@ -71,7 +71,7 @@ python .agents/skills/copy-trade/scripts/fetch_homework.py "<链接>"
 别名:  { 题材: "硅微粉", 候选tss: ["688300.SH"], 标的: "联瑞新材", 备注: "PTFE方案硅微粉填料龙头" }
 ```
 
-- 脚本 `symbol_map.py` 做**自动推断**：扫描消息里出现的"A股二字/三字/四字中文名称 + 罕见词"，用 `mcp__tushareMcp__stock_basic` 按名称反查 ts_code；对纯黑话/题材，先落到候选（如"冷液→申菱环境 301018.SZ"），**输出候选清单让用户确认**，确认后写入 alias-map（不回写仓库，写 `output/copy-trade/alias-map.override.yaml` 优先加载）。
+- 脚本 `symbol_map.py` 做**自动推断**：扫描消息里出现的"A股二字/三字/四字中文名称 + 罕见词"，名称→代码反查列候选清单交用户确认后固化（罕见词可先按常识/搜索给出候选，标注置信度，不臆造代码）；对纯黑话/题材，先落到候选（如"冷液→申菱环境 301018.SZ"），**输出候选清单让用户确认**，确认后写入 alias-map（不回写仓库，写 `output/copy-trade/alias-map.override.yaml` 优先加载）。
 - **未确认的别名不进入回测**，只在结论里标注"待确认，未纳入收益统计"。
 
 ### 第 4 步：轻量回测
@@ -80,7 +80,7 @@ python .agents/skills/copy-trade/scripts/fetch_homework.py "<链接>"
 python .agents/skills/copy-trade/scripts/backtest.py --period 2026-08-14..2026-08-31
 ```
 
-- 用 `mcp__tushareMcp__daily` 拉每个已确认标的在时间窗内的日K。
+- 用 `fetch_quotes.py --codes <已确认标的> --full-days <窗口自然日>` 拉时间窗内日K并写回 `output/quotes-store/`，回测从行情库读数（backtest.py 的 `--quotes`/`--quotes-file` 仍可用作离线回填通道）。
 - 回测假设（明示）：**信号出现当日用次日开盘价成交；买入=全仓/等权，卖出=清零；以收盘价逐日盯市**。等权回测源与组合两条线：信号源、逐日收益曲线、期末值、胜率、最大回撤。
 - 输出 `output/copy-trade/backtest_<作者>.md` 路线还原表（一目了然）。
 

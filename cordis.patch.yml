@@ -5,6 +5,8 @@
 #   enabled        总开关：关闭后侧边栏不出现「投研工具」入口
 #   enabledSkills  启用的 skill id 列表（对应 lib/client.js 内联注册表 ADVISOR_SKILLS）
 #   defaultTarget  点击「运行」默认投递：'new'(新开会话，默认) | 'current'(当前会话)
+#   tushareToken   tushare pro token：配置后随工具指令以 --token 参数传给 fetch_quotes.py；
+#                  留空回退环境变量 TUSHARE_TOKEN / 工作区 .env（勿把真实 token 写进本文件）
 - insert:
     - id: advisor-agent
       name: advisor-agent
@@ -12,9 +14,11 @@
         enabled: true
         enabledSkills:
           - stock-valuation
+          - feishen-trading-logic
           - copy-trade
           - workspace-init
           - w-bottom-screener
           - watchlist-manager
           - bili-video-summary
         defaultTarget: new
+        tushareToken: ''

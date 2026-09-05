@@ -13,6 +13,7 @@
   },
   "files": [
     "src/",
+    ".agents/skills/feishen-trading-logic/",
     "lib/client.js",
     "cordis.patch.yml",
     "README.md",
@@ -37,9 +38,6 @@
   },
   "peerDependencies": {
     "@deepseek-ai/schemastery": ">=3.18.0"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "keywords": [
     "deepseek-harness",

@@ -75,7 +75,7 @@ def _cmd_copy(args: argparse.Namespace) -> None:
 
 
 def _cmd_w_bottom(args: argparse.Namespace) -> None:
-    """观察仓 W底筛选：转调自包含脚本 w_bottom_screen.py（确定性部分，取数由 agent 调 tushare MCP）。"""
+    """观察仓 W底筛选：转调自包含脚本 w_bottom_screen.py（读本地行情库判定，取数走 fetch_quotes.py）。"""
     import subprocess
     import sys as _sys
     from pathlib import Path
@@ -87,7 +87,7 @@ def _cmd_w_bottom(args: argparse.Namespace) -> None:
     if args.plan:
         cmd += ["--plan"]
     if args.data:
-        cmd += ["--data", args.data, "--lookback", str(args.lookback),
+        cmd += ["--out-dir", args.data, "--lookback", str(args.lookback),
                 "--trough-tol", str(args.trough_tol), "--ma-window", str(args.ma_window)]
     result = subprocess.run(cmd)
     raise SystemExit(result.returncode)

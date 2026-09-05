@@ -24,7 +24,7 @@
 - 侧边栏「投研工具」入口点开，**按 schema 自动渲染表单**（文本框 / 下拉框）。
 - 用户点「运行」，面板把参数拼成一条指令，通过 `session.prompt` 提交给 **DSH agent** 执行。
 - 可**新开会话**投递（默认），也可**发到当前会话**（表单内临时切换）。
-- agent 收到后执行：普通 skill 匹配对应 skill 跑方法论；`workspace-init`/`w-bottom-screener` 这类自包含脚本型 skill 则按指令下载脚本、python 运行，结果回显在会话流里。
+- agent 收到后执行：普通 skill 匹配对应 skill 跑方法论；`feishen-trading-logic` 这类方法论资产型工具会先下载插件分发的 Markdown、再按文档执行；`workspace-init`/`w-bottom-screener` 这类自包含脚本型 skill 则按指令下载脚本、python 运行，结果回显在会话流里。
 
 **关键点：没有实现新的 agent** —— 执行者就是 DSH 自己的 agent，面板只是「表单 + 一次 prompt 转发」。
 
@@ -54,6 +54,7 @@ pnpm exec dsh plugin --profile web add advisor-agent
 | skill id | 面板名 | 参数 | 状态 |
 |---|---|---|---|
 | `stock-valuation` | 个股估值 | `symbol`（股票名或代码）、`market`（A/HK） | ✅ 首期 |
+| `feishen-trading-logic` | 飞神交易逻辑 | `question`、`mode`、`symbols`、`theme`、`horizon`、`position_context` | ✅ |
 | `copy-trade` | 抄作业分析 | `url`（作业链接）、`html`（本地文件，可选） | ✅ |
 | `workspace-init` | 初始化工作区 | `target`（目标目录） | ✅ |
 | `w-bottom-screener` | 观察仓 W底筛选 | `lookback`、`trough_tol`（可选） | ✅ |
@@ -68,15 +69,17 @@ pnpm exec dsh plugin --profile web add advisor-agent
 | 字段 | 含义 | 默认 |
 |---|---|---|
 | `enabled` | 总开关：关闭后侧边栏不显示入口 | `true` |
-| `enabledSkills` | 启用的 skill id 列表 | `["stock-valuation","copy-trade","workspace-init","w-bottom-screener","watchlist-manager","bili-video-summary"]` |
+| `enabledSkills` | 启用的 skill id 列表 | `["stock-valuation","feishen-trading-logic","copy-trade","workspace-init","w-bottom-screener","watchlist-manager","bili-video-summary"]` |
 | `defaultTarget` | 点「运行」默认投递目标：`new`(新开会话) / `current`(当前会话) | `new` |
+| `tushareToken` | tushare pro token：配置后随工具指令以 `--token` 参数传给 fetch_quotes.py；留空回退环境变量 `TUSHARE_TOKEN` / 工作区 `.env`（token 会出现在指令文本中） | `""` |
 
 ### 新增一个 skill
 
 1. 在 `lib/client.js` 顶部的 **`ADVISOR_SKILLS`（技能注册表）** 加一条对象：`{ id, label, description, params }`。
 2. （可选）在 `cordis.patch.yml` 的 `enabledSkills` 默认列表里补上该 id，让它默认启用。
-3. 决定该 skill 的**执行方式**，二选一：
-   - **普通 skill**：确保 agent 侧能识别该 skill 并执行（复用 `.agents/skills/<skill-id>/` 的方法论）。走 `buildInstruction` 的通用分支 `请调用 skill「…」`。
+3. 决定该 skill 的**执行方式**，按资产来源三选一：
+   - **普通 skill**：确保目标 agent 侧本身能识别该 skill 并执行（复用 `.agents/skills/<skill-id>/` 的方法论）。走 `buildInstruction` 的通用分支 `请调用 skill「…」`。
+   - **方法论资产型 skill**（如 `feishen-trading-logic`）：方法论文档随插件包分发，通过宿主静态端点 `makeAssetHandler` 伺服；在 `buildInstruction` 里要求目标会话先下载 Markdown 到当前工作区、再按文档执行，**不调用 skill**，因此可直接用于空白工程目录。
    - **自包含脚本型 skill**（如 `workspace-init`、`w-bottom-screener`、`bili-video-summary`）：脚本随插件 `src/` 分发，通过宿主静态端点 `makeAssetHandler` 伺服；在 `buildInstruction` 里为它写**确定性指令分支**（下载脚本 → python 跑 → 汇报），不依赖目标工作区里存在 `.agents/skills` 或 quantify 包。其中 `workspace-init`/`w-bottom-screener`/`momentum-rotation` 是**纯标准库**脚本；`bili-video-summary` 依赖 `yt-dlp + faster-whisper`（联网下音频 + 离线转录），脚本内置依赖自检（`--selfcheck`）、模型缓存收拢到 `output/videos/models/`（`--models`）与幂等（已有文字稿跳过转录），非纯标准库但同样自包含分发、无需 skill。
 
 > 注意：DSH 的 `/plugins/<id>/` 只伺服 `client.js` 一个 bundle，插件的其它静态文件**不会自动被伺服**——除了 `src/index.js` 里显式用 `makeAssetHandler` 注册的资产端点。技能注册表必须内联在 `lib/client.js`，不能走运行时 fetch；自包含脚本则要**同时**（a）放进 `src/` 随包分发、（b）在 `src/index.js` 注册静态端点、（c）在 `buildInstruction` 写下载+运行的确定性指令。增加/调整技能只是改这几处，渲染 / 校验 / 指令拼装全部自动跟进。
@@ -100,6 +103,8 @@ pnpm exec dsh plugin --profile web add advisor-agent
 ├── src/workspace-init/    # 自包含 Python 脚本（纯标准库，随包分发，经静态端点供 agent 下载）
 │   ├── init_workspace.py  #   工作区初始化脚手架
 │   └── w_bottom_screen.py #   W底放量筛选（--plan 列清单 / --data 判形态出报告）
+├── .agents/skills/feishen-trading-logic/
+│      # 飞神交易逻辑 Markdown 资产（SKILL / 规则卡 / 别名字典；随插件分发，面板不依赖目标工程拥有 skill）
 └── lib/client.js          # 客户端 bundle：技能注册表 + 通用表单引擎 + 投递
 ```
 

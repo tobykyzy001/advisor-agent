@@ -1,6 +1,6 @@
 ---
 name: w-bottom-screener
-description: 观察仓「W底 + 放量」形态筛选技能。当用户要求「筛选观察仓里当日/近几日出现 W底(双重底)且放量的标的」「找双底放量突破的票」「观察仓今天谁形成了W底形态」「帮我扫一遍自选里的技术形态买点」时触发。核心：从观察仓清单读标的池 → 用 tushare MCP 取近 N 日线 → 识别双底(两相近低点，允许横盘变体) + 第二底后放量阳线确认 → 输出命中标的报告。与技术面互补：本技能是「给定池子的形态买点筛选」，股票估值交给 stock-valuation，行业景气交给 prosperity-analysis，自己持仓跟踪交给 portfolio-tracker。
+description: 观察仓「W底 + 放量」形态筛选技能。当用户要求「筛选观察仓里当日/近几日出现 W底(双重底)且放量的标的」「找双底放量突破的票」「观察仓今天谁形成了W底形态」「帮我扫一遍自选里的技术形态买点」时触发。核心：从观察仓清单读标的池 → fetch_quotes.py 直连 tushare 增量刷本地行情库 → 识别双底(两相近低点，允许横盘变体) + 第二底后放量阳线确认 → 输出命中标的报告。与技术面互补：本技能是「给定池子的形态买点筛选」，股票估值交给 stock-valuation，行业景气交给 prosperity-analysis，自己持仓跟踪交给 portfolio-tracker。
 ---
 
 # 观察仓 W底 + 放量筛选（W-Bottom Screener）
@@ -15,13 +15,16 @@ description: 观察仓「W底 + 放量」形态筛选技能。当用户要求「
 
 ## 数据源约定（硬约束）
 
-- **只用 tushare MCP** 取日线：`mcp__tushareMcp__daily`（历史日K，无频率限制）。
-- **无 MCP 直接拒绝运行**：会话内没有 `mcp__tushareMcp__daily` 工具、或没在投研工具设置卡片填 tushare MCP 地址时，**本功能不可用**，直接报错提示用户先配置，**不得回退 akshare、不写 tushare SDK 直连**（akshare 接口不稳定，禁用）。
-- 取数字段保留：`trade_date / open / high / low / close / vol`，时点标注 data 更新时间。
+- **取数统一走 `fetch_quotes.py`**（自包含纯标准库脚本，直连 tushare pro REST API）：
+  刷库模式对照本地行情库增量补到最新交易日，行情数据**全程不经过任何 LLM 上下文**。
+  token 配置：`--token` 参数 / 环境变量 `TUSHARE_TOKEN` / 工作区 `.env` 写 `TUSHARE_TOKEN=…`。
+- **无 token 直接拒绝运行**：`fetch_quotes.py` 退出码 2（缺 token）时，如实转告用户先配置
+  TUSHARE_TOKEN，**不得回退 akshare、不得编造行情**（akshare 接口不稳定，禁用）。
+- 刷库字段保留：`trade_date / open / high / low / close / vol`，报告标注数据截止日。
 - **本地 CSV 行情库**（与 momentum-rotation 共享）：`output/quotes-store/<ts_code>.csv`，每只一份、
-  越攒越厚。`--plan` 依据库内最后交易日把标的分成**增量补数（只取「最后日期+1→今天」）/ 全量
-  （新票或库内不足 lookback 根）/ 免取（已最新）**；`--data` 把增量按 trade_date 幂等合并写回后
-  用库内全量历史判定。`--no-store` 可整体关闭退回旧行为。
+  越攒越厚，由 `fetch_quotes.py` 幂等合并写回（按 trade_date 去重、新行覆盖同日旧行）。
+  本脚本对库**只读**；判定前做数据门禁：库内无数据或最后交易日距今超过 10 自然日的标的视为缺口，
+  fail-closed 提示先刷库，不拿陈旧数据误出形态。
 
 ## W底口径（可参数化，默认如下）
 
@@ -39,82 +42,49 @@ description: 观察仓「W底 + 放量」形态筛选技能。当用户要求「
 3. **确认**：B1 之后 **3 个交易日**内，出现一根「**阳线（收盘>开盘）且 成交量 ≥ 前 5 日均量**」的 K 线 — 即 W底成型，**不要求突破颈线**。
 4. 确认 K 线落在**近 5 个交易日**内 → 命中并输出。
 
-## 总流程（三段式，增量行情库 + 大池子分片多 agent 取数 + 落盘旁路）
+## 总流程（两步：fetch_quotes.py 刷库 → 直接读库判定）
 
 ```
-列出观察仓（标注每只增量/全量区间）→ （分片）子代理按区间并行取数直接落盘
-→ 脚本幂等合并写回 CSV 行情库 → 判形态 → 出报告
+fetch_quotes.py 对照行情库增量拉数并幂等写回（行情只走「API → 磁盘」，不过 LLM）
+→ w_bottom_screen.py 直接读库判形态 → 出报告
 ```
 
-### 取数纪律（硬约束，防会话爆炸）
+> 两个脚本都是**自包含单文件**（纯标准库、零 quantify 依赖），随插件包 `src/` 分发、由宿主静态端点
+> `/plugins/advisor-agent/assets/workspace-init/<脚本名>` 提供下载；也可在 advisor-agent 仓库内直接
+> `python src/workspace-init/<脚本名>` 运行（等价于 `python -m quantify.cli w-bottom` 的转调路径）。
 
-- **行情数据本体永不进入主会话**：不回显、不粘贴、不汇总明细；主会话只接触「一行回执」。
-- **池子 > 10 只必须分片多 agent**：主 agent 派子代理（subagent）并行取数，子代理各自把分片 JSON
-  **直接写盘**（write/pwsh），分析脚本从目录合并，数据全程「MCP → 磁盘 → 脚本」旁路。
-- 池子 ≤ 10 只（单片）允许主会话直取，但同样只写文件、不把行情贴进回复。
-
-### 第 1 步：读观察仓 + 待取数清单（自动分片）
+### 第 1 步：刷库（增量补到最新交易日）
 
 ```bash
-python src/workspace-init/w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml --plan
+python scripts/fetch_quotes.py --watchlist output/watchlist/watchlist.yaml --min-bars 30 --full-days 90
 ```
-
-> 脚本 `w_bottom_screen.py` 是**自包含单文件**（纯标准库、零 quantify 依赖），随插件包 `src/` 分发、
-> 由宿主静态端点 `/plugins/advisor-agent/assets/workspace-init/w_bottom_screen.py` 提供下载；也可在
-> advisor-agent 仓库内直接 `python src/workspace-init/w_bottom_screen.py` 运行（等价于
-> `python -m quantify.cli w-bottom --plan`）。
 
 - 观察仓清单在 `output/watchlist/watchlist.yaml`（已被 gitignore，不入库，属个人关注信息）。
 - 清单模板由 `workspace-init` 技能生成（`init_workspace.py` 的 WATCHLIST_YAML 是唯一模板真源）；本技能对清单**只读不写**——往池子加/删标的用 `watchlist-manager`（`manage_watchlist.py add/rm`），命中形态后如需留痕也**委托**它写入（`manage_watchlist.py set <code> --BS B --BS_DATE <确认日>`），不自己改这份 yaml。
-- 池子 > 10 只时 `--plan` 自动按每片 10 只打印分片清单（`--shards N` 可显式指定片数）。
-- `--plan` 会对照本地行情库给每只标注**取数区间**：增量（`start_date=<最后日期+1> end_date=<今天>`）
-  或全量（新票/库内不足 lookback 根）；库内已最新的直接「免取」。后续取数**严格按区间执行**，
-  增量通常每天只差几根 K 线，token 与耗时大幅下降。
+- 刷库输出只有每只一行入库摘要（免取/增量 N 根/全量 N 根），**K 线明细不进会话**；把摘要原样转达即可。
+- 失败分流：退出码 2（缺 token）→ 转告用户配置 `TUSHARE_TOKEN`（环境变量 / 工作区 `.env` / `--token`）；退出码 1/3（网络或部分标的失败）→ 转告失败清单，**不要跳过刷库直接判定**。
+- `--min-bars 30`：库内不足 30 根的自动全量重取近 `--full-days 90` 自然日（覆盖 lookback + 均量缓冲）。
 
-### 第 2 步：agent 取数（按 --plan 区间，分片旁路落盘）
-
-对清单里每个 `ts_code`，按 `--plan` 标注的区间调用 `mcp__tushareMcp__daily`（增量票只取尾巴；
-全量票取近 30+ 交易日，`start_date` 取 today−60 覆盖 lookback + 均量缓冲）。
-
-- **单片**（小池子）：主会话直取，整理成 JSON 保存为 `output/w-bottom/quotes.json`：
-
-```json
-{ "600519.SH": [ {"trade_date":"20250102","open":..,"high":..,"low":..,"close":..,"vol":..}, ... ] }
-```
-
-- **分片**（大池子）：每个分片派一个 subagent 并行（**无需清空 quotes 目录**：`--data` 按
-  trade_date 幂等合并，残留分片重复合并不产生副作用）：
-
-  > 子代理任务模板：「对 ts_code 清单 <片内清单+各自 start/end> 按标注区间逐只调
-  > mcp__tushareMcp__daily，字段保留 trade_date/open/high/low/close/vol，整理为
-  > `{"<ts_code>": [...]}` 的 JSON，用写文件工具原样写入 `output/w-bottom/quotes/shard_<k>.json`。
-  > 行情数据不得出现在你的回复中；回复只需一行：`shard <k>：完成 x/y，失败 [...]`。
-  > 若本会话（含子代理）无 mcp__tushareMcp__daily 工具，回执 `shard <k>：无 MCP`，不得编造行情。」
-
-  主 agent 只收集各片回执；失败分片重派一次，仍失败则在报告中标注缺口。
-
-### 第 3 步：合并写回行情库 + 形态判定 + 出报告
+### 第 2 步：读库判形态 + 出报告
 
 ```bash
-# --data 单片传文件、分片传目录：脚本自动合并全部 *.json、按日期幂等写回 output/quotes-store/，
-# 再用库内全量历史判形态（全部免取时放一个空 JSON 分片 {} 即可，脚本会直接读库）
-python src/workspace-init/w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml --data output/w-bottom/quotes     # 分片目录
-python src/workspace-init/w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml --data output/w-bottom/quotes.json # 单片小池子
+python scripts/w_bottom_screen.py --watchlist output/watchlist/watchlist.yaml
 ```
 
-输出 `output/w-bottom/screen_<时间戳>.md`：命中标的表格（代码/名称/左底/右底/确认日/量比）+ 逐只形态说明。
+- 直接读 `output/quotes-store/` 判定（无需 --data 回填）；数据门禁发现缺口或过期（>10 自然日）会
+  fail-closed 并提示先刷库。
+- 输出 `output/w-bottom/screen_<时间戳>.md`：命中标的表格（代码/名称/左底/右底/确认日/量比）+ 逐只形态说明，报告头部标注数据截止日。
+- `--plan` 仅作诊断：打印每只的库内根数/最后交易日/待补区间，不取数。
 
 ### 批量维护观察仓（可选指引）
 
-往 `watchlist.yaml` 一次加几十上百只时，同样禁止「逐个 ts_code 查 MCP/逐个 edit」的串行模式；
-且清单**写入口唯一是 `watchlist-manager`**，本指引只解决「名单 → 规范代码」的批量化，写入仍走它：
+往 `watchlist.yaml` 一次加几十上百只时，避免「逐个 edit」的串行模式；清单**写入口唯一是
+`watchlist-manager`**，本指引只解决「名单 → 规范代码」的批量化，写入仍走它：
 
-- 用户贴的名单（名称/代码混杂）→ 派**一个**子代理：一次调 `mcp__tushareMcp__stock_basic` 拉全市场基础表
-  → 落盘 `output/watchlist/stock_basic.json`（数据不进主会话）→ 用本地脚本（pwsh/python 一次跑）对名单做
-  名称/代码模糊匹配 → 产出规范化的 ts_code 清单（很小，可回主会话）。
-- 主 agent 核对清单后，逐条走 `watchlist-manager` 写入（`manage_watchlist.py add <code> --name ...`，
-  幂等、纯本地、无网络，几十条循环也很快）；不自己直接改 `watchlist.yaml`。
-- 匹配不上（停牌/退市/简称差异）的列成清单交用户人工确认，不臆造代码。
+- 名单里的**代码**部分：`manage_watchlist.py add` 自动规范化（600519→600519.SH、00700→00700.HK），
+  可用本地脚本循环批量跑（幂等、纯本地）。
+- 名单里的**中文名称**部分：无法唯一确定代码时列成候选清单交用户人工确认，不臆造代码。
+- 主 agent 核对清单后，逐条走 `watchlist-manager` 写入；不自己直接改 `watchlist.yaml`。
 
 ## 与其它技能的分工
 

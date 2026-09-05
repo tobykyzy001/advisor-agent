@@ -1,11 +1,15 @@
 """中期动量轮动策略的单元测试。
 
-测试对象是自包含脚本 src/workspace-init/momentum_strategy.py 里的纯函数
-（不依赖 quantify 包、不联网、不调 MCP）。通过 importlib 把脚本当作模块导入，
+测试对象是自包含脚本 src/workspace-init/momentum_strategy.py 里的纯函数与主流程
+（不依赖 quantify 包、不联网）。通过 importlib 把脚本当作模块导入，
 保证测试的正是「分发出去的同一份算法真源」。
+
+行情数据一律先写入临时目录里的本地 CSV 行情库（与 fetch_quotes.py 刷库后的
+落盘结构一致），再由策略脚本直接读库计算——全程离线、不碰真实 output/ 目录。
 """
 from __future__ import annotations
 
+import csv
 import importlib.util
 import json
 import sys
@@ -318,77 +322,37 @@ def test_rows_to_series_close_required():
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 分片取数（大池子多 agent 并行）：shard_groups / load_quotes
+# 共享行情库写入辅助（模拟 fetch_quotes.py 刷库后的落盘状态）
 # ─────────────────────────────────────────────────────────────────────────
 
-shard_groups = m.shard_groups
-load_quotes = m.load_quotes
+
+def _write_watchlist(tmp_path, codes) -> Path:
+    wl = tmp_path / "watchlist.yaml"
+    wl.write_text("\n".join(f"- ts_code: {c}\n  name: 测试" for c in codes) + "\n",
+                  encoding="utf-8")
+    return wl
 
 
-def test_shard_groups_default_size():
-    """82 只按默认每片 10 只 → 9 片，末片 2 只，顺序与池子一致。"""
-    codes = [f"{i:06d}.SH" for i in range(82)]
-    groups = shard_groups(codes)
-    assert len(groups) == 9
-    assert groups[0] == codes[:10]
-    assert groups[-1] == codes[-2:]
-
-
-def test_shard_groups_explicit_shards():
-    """显式指定片数 → 按片数均分（向上取整）。"""
-    codes = [str(i) for i in range(10)]
-    assert shard_groups(codes, shards=3) == [["0", "1", "2", "3"], ["4", "5", "6", "7"], ["8", "9"]]
-
-
-def test_shard_groups_tiny_pool():
-    """小池子始终单片（片数多于标的数也不拆碎）。"""
-    assert shard_groups(["a"], shards=8) == [["a"]]
-    assert shard_groups([], shards=8) == []
-
-
-def test_load_quotes_single_file(tmp_path):
-    """单文件模式：兼容小池子直取的 quotes.json。"""
-    fp = tmp_path / "quotes.json"
-    fp.write_text('{"A.SH": [{"close": 1}], "B.SH": [{"close": 2}]}', encoding="utf-8")
-    raw, notes = load_quotes(fp)
-    assert set(raw) == {"A.SH", "B.SH"}
-    assert notes == []
-
-
-def test_load_quotes_dir_merges_shards(tmp_path):
-    """目录模式：合并全部 *.json 分片；跨片重复的 ts_code 保留行数较多者。"""
-    (tmp_path / "shard_2.json").write_text('{"A.SH": [{"close": 1}]}', encoding="utf-8")
-    (tmp_path / "shard_1.json").write_text(
-        '{"A.SH": [{"close": 1}, {"close": 1}, {"close": 1}], "B.SH": [{"close": 2}]}',
-        encoding="utf-8",
-    )
-    raw, notes = load_quotes(tmp_path)
-    assert len(raw["A.SH"]) == 3  # shard_1 行数多，覆盖 shard_2 的单行版本
-    assert len(raw["B.SH"]) == 1
-    assert any("重复出现" in n for n in notes)
-
-
-def test_load_quotes_skips_non_list_value(tmp_path):
-    """分片里某标的的值不是数组 → 跳过并提示，不炸掉整批。"""
-    tmp_path.joinpath("shard_1.json").write_text(
-        '{"C.SH": "oops", "A.SH": [{"close": 1}]}', encoding="utf-8"
-    )
-    raw, notes = load_quotes(tmp_path)
-    assert list(raw) == ["A.SH"]
-    assert any("不是数组" in n for n in notes)
-
-
-def test_load_quotes_bad_shard_fails_closed(tmp_path):
-    """坏 JSON 分片 → ValueError 指明文件名，让主 agent 能重派该分片。"""
-    tmp_path.joinpath("shard_3.json").write_text("{bad json", encoding="utf-8")
-    with pytest.raises(ValueError, match="shard_3.json"):
-        load_quotes(tmp_path)
-
-
-def test_load_quotes_empty_dir_fails(tmp_path):
-    """目录下没有任何分片 → FileNotFoundError（视为未取数）。"""
-    with pytest.raises(FileNotFoundError):
-        load_quotes(tmp_path)
+def _write_store(store: Path, feeds: dict[str, list[dict]]) -> None:
+    """按共享库格式把行情行合并写入 store/<ts_code>.csv（同日覆盖、升序、幂等）。"""
+    for code, rows in feeds.items():
+        fp = store / f"{code}.csv"
+        by_date: dict[str, dict] = {}
+        if fp.exists():
+            with fp.open("r", encoding="utf-8", newline="") as f:
+                for r in csv.DictReader(f):
+                    td = (r.get("trade_date") or "").strip()
+                    if td:
+                        by_date[td] = r
+        for r in rows:
+            by_date[str(r["trade_date"])] = r
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        with fp.open("w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(m.CSV_FIELDS)
+            for td in sorted(by_date):
+                r = by_date[td]
+                w.writerow([r.get(k, "") for k in m.CSV_FIELDS])
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -396,38 +360,40 @@ def test_load_quotes_empty_dir_fails(tmp_path):
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def _decline_rebound_rows(n: int, d0: date = date(2024, 1, 1)) -> list[dict]:
+def _decline_rebound_rows(n: int = 130, end: date | None = None) -> list[dict]:
     """构造「大盘下行但个股仍合格」的确定性行情：先平缓 → 中段尖峰 → 深跌 → 尾盘温和反弹。
 
     收盘曲线：60 根 100 → 10 根 108（尖峰）→ 50 根 88 → 10 根 86→95 温和反弹。
     验证口径（n=130 时）：mom60 = 95/108-1 ≈ -12%（< -5%，大盘判 down）；
     MA120 ≈ 94.875 < 收盘价 95（趋势关过）；偏离 MA20 ≈ 6.4%、近 5 日涨幅 ≈ 5.6%（反追高关过）。
+    默认末根 = 今天（通过 10 自然日新鲜度门禁）；end 可整段平移窗口。
     """
+    if end is None:
+        end = date.today()
     closes = [100.0] * 60 + [108.0] * 10 + [88.0] * 50 + [86.0 + i for i in range(10)]
     assert len(closes) == n, "本用例固定 130 根窗口"
+    d0 = end - timedelta(days=n - 1)
     return [_bar(d0 + timedelta(days=i), c) for i, c in enumerate(closes)]
 
 
 def _run_strategy(tmp_path, extra_args: list[str]):
-    """以「3 只同形态合格股 + 老仓 OLD.SH」跑一轮完整策略，返回 (rc, 回写后的 state)。"""
+    """以「3 只同形态合格股 + 老仓 OLD.SH」跑一轮完整策略，返回 (rc, 回写后的 state)。
+
+    行情先写入临时行情库（末根=今天，模拟 fetch_quotes.py 刷库后的状态），
+    策略脚本直接读库计算，全程不联网、不碰真实 output/ 目录。
+    """
     codes = ["N1.SH", "N2.SH", "OLD.SH"]
-    watchlist = tmp_path / "watchlist.yaml"
-    watchlist.write_text(
-        "\n".join(f"- ts_code: {c}\n  name: 测试" for c in codes) + "\n", encoding="utf-8"
-    )
-    rows = _decline_rebound_rows(130)
-    quotes = tmp_path / "quotes.json"
-    quotes.write_text(json.dumps({c: rows for c in codes}), encoding="utf-8")
+    watchlist = _write_watchlist(tmp_path, codes)
+    store = tmp_path / "store"
+    _write_store(store, {c: _decline_rebound_rows() for c in codes})
     state = tmp_path / "state.json"
     state.write_text(json.dumps({
         "as_of": "2024-06-01", "cash_pct": 0.875, "signal": "signal", "regime": "up",
         "target": ["OLD.SH"], "positions": [{"ts_code": "OLD.SH", "weight": 0.125}],
     }), encoding="utf-8")
-    rc = m.main([
-        "--watchlist", str(watchlist), "--state", str(state), "--data", str(quotes),
-        "--no-store",  # 既有用例隔离本地行情库，保持纯 JSON 全量语义
-        *extra_args,
-    ])
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
+                 "--store", str(store), "--out-dir", str(tmp_path / "out"),
+                 *extra_args])
     return rc, json.loads(state.read_text(encoding="utf-8"))
 
 
@@ -450,137 +416,140 @@ def test_market_guard_off_runs_on_down(tmp_path):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 本地 CSV 行情库（增量取数 + 幂等合并）：store_status / upsert_store / 全流程
+# 本地 CSV 行情库只读：store_status / read_store
 # ─────────────────────────────────────────────────────────────────────────
-
-store_status = m.store_status
-upsert_store = m.upsert_store
 
 
 def test_store_status_missing(tmp_path):
     """库内无此标的 → (0, None)。"""
-    assert store_status(tmp_path, "A.SH") == (0, None)
+    assert m.store_status(tmp_path, "A.SH") == (0, None)
 
 
-def test_upsert_store_creates_csv_and_merges(tmp_path):
-    """首批增量：新建 CSV（含表头、按日期升序），merged 回读全量，回执提示入库。"""
-    raw = {"A.SH": [_bar(date(2025, 1, 2), 1.5), _bar(date(2025, 1, 3), 1.6)]}
-    merged, notes = upsert_store(tmp_path, raw)
-    fp = tmp_path / "A.SH.csv"
-    assert fp.exists()
-    assert fp.read_text(encoding="utf-8").splitlines()[0] == "trade_date,open,high,low,close,vol"
-    assert [r["trade_date"] for r in merged["A.SH"]] == ["20250102", "20250103"]
-    assert store_status(tmp_path, "A.SH") == (2, "20250103")
-    assert any("入库" in n for n in notes)
-
-
-def test_upsert_store_idempotent(tmp_path):
-    """幂等：同批增量重复合并 → 行数不变、文件字节一致、无新回执。"""
-    raw = {"A.SH": [_bar(date(2025, 1, 2), 1.5), _bar(date(2025, 1, 3), 1.6)]}
-    upsert_store(tmp_path, raw)
-    first = (tmp_path / "A.SH.csv").read_text(encoding="utf-8")
-    merged, notes = upsert_store(tmp_path, raw)
-    assert (tmp_path / "A.SH.csv").read_text(encoding="utf-8") == first
-    assert len(merged["A.SH"]) == 2
-    assert store_status(tmp_path, "A.SH") == (2, "20250103")
-    assert notes == []
-
-
-def test_upsert_store_increment_and_overwrite(tmp_path):
-    """增量合并：新日期追加、同日新值覆盖旧值。"""
-    upsert_store(tmp_path, {"A.SH": [_bar(date(2025, 1, 2), 1.5)]})
-    inc = [
-        {"trade_date": "20250102", "close": 9.9, "open": 9.0, "high": 9.0,
-         "low": 9.0, "vol": 999},                       # 同日覆盖
-        _bar(date(2025, 1, 3), 1.6),                    # 新增
-    ]
-    merged, _ = upsert_store(tmp_path, {"A.SH": inc})
-    rows = merged["A.SH"]
+def test_store_status_and_read_after_write(tmp_path):
+    """写入两根 → (2, 最后交易日)；read_store 按日期升序回读。"""
+    _write_store(tmp_path, {"A.SH": [_bar(date(2025, 1, 2), 1.5),
+                                     _bar(date(2025, 1, 3), 1.6)]})
+    assert m.store_status(tmp_path, "A.SH") == (2, "20250103")
+    rows = m.read_store(tmp_path, "A.SH")
     assert [r["trade_date"] for r in rows] == ["20250102", "20250103"]
-    assert rows[0]["close"] == 9.9
-    assert store_status(tmp_path, "A.SH") == (2, "20250103")
+    assert (tmp_path / "A.SH.csv").read_text(encoding="utf-8").splitlines()[0] \
+        == "trade_date,open,high,low,close,vol"
 
 
-def _write_watchlist(tmp_path, codes) -> Path:
-    wl = tmp_path / "watchlist.yaml"
-    wl.write_text("\n".join(f"- ts_code: {c}\n  name: 测试" for c in codes) + "\n",
-                  encoding="utf-8")
-    return wl
+# ─────────────────────────────────────────────────────────────────────────
+# 数据门禁：库内缺数 / 数据过期 → fail-closed 不出信号
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_run_fail_closed_on_missing_symbol(tmp_path, capsys):
+    """池内某只库内无数据 → rc=1 fail-closed，列出缺口并提示先跑 fetch_quotes.py。"""
+    watchlist = _write_watchlist(tmp_path, ["N1.SH", "MISS.SH"])
+    store = tmp_path / "store"
+    _write_store(store, {"N1.SH": _decline_rebound_rows()})
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(tmp_path / "state.json"),
+                 "--store", str(store), "--out-dir", str(tmp_path / "out")])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "MISS.SH" in out and "库内无数据" in out
+    assert "fetch_quotes.py" in out
+
+
+def test_run_fail_closed_on_stale_data(tmp_path, capsys):
+    """库内最后交易日距今超过 10 自然日 → 视为过期，fail-closed 不出信号。"""
+    watchlist = _write_watchlist(tmp_path, ["N1.SH"])
+    store = tmp_path / "store"
+    end = date.today() - timedelta(days=m.MAX_STALE_DAYS + 20)
+    _write_store(store, {"N1.SH": _decline_rebound_rows(end=end)})
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(tmp_path / "state.json"),
+                 "--store", str(store), "--out-dir", str(tmp_path / "out")])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "超过 10 自然日" in out
+    assert "fetch_quotes.py" in out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# --plan 诊断（只看库内状态，不取数）
+# ─────────────────────────────────────────────────────────────────────────
 
 
 def test_plan_incremental_full_and_fresh(tmp_path, capsys):
-    """--plan 按库内状态把标的分为：增量补数（带显式区间）/ 全量 / 免取。"""
+    """--plan 按库内状态把标的分为：待增量（带显式区间）/ 待全量 / 免取，并给出刷库命令。"""
     codes = ["OLD.SH", "NEW.SH", "FRESH.SH"]
     wl = _write_watchlist(tmp_path, codes)
     store = tmp_path / "store"
-    # OLD.SH：121 根老数据 → 增量，start = 最后日期(2024-04-30) +1
-    upsert_store(store, {"OLD.SH": [_bar(date(2024, 1, 1) + timedelta(days=i), 100.0)
+    # OLD.SH：121 根老数据 → 待增量，start = 最后日期(2024-04-30) + 1
+    _write_store(store, {"OLD.SH": [_bar(date(2024, 1, 1) + timedelta(days=i), 100.0)
                                     for i in range(121)]})
     # FRESH.SH：121 根且末根是今天 → 免取
     today = date.today()
-    upsert_store(store, {"FRESH.SH": [_bar(today - timedelta(days=(120 - i)), 100.0)
+    _write_store(store, {"FRESH.SH": [_bar(today - timedelta(days=(120 - i)), 100.0)
                                       for i in range(121)]})
     rc = m.main(["--watchlist", str(wl), "--plan", "--store", str(store)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "增量补数 1 只 / 全量 1 只 / 库内已最新免取 1 只" in out
-    assert "ts_code=OLD.SH start_date=20240501" in out
-    assert "ts_code=NEW.SH（全量" in out
-    assert "FRESH.SH" in out.split("免取")[0] or "FRESH.SH" in out
+    assert "OLD.SH  待增量 20240501" in out
+    assert "NEW.SH  待全量（库内无数据）" in out
+    assert "FRESH.SH  免取" in out
+    assert "fetch_quotes.py --watchlist" in out and "--min-bars 121" in out
 
 
-def test_plan_all_fresh_no_fetch(tmp_path, capsys):
-    """全部免取：--plan 提示无需取数。"""
+def test_plan_all_fresh(tmp_path, capsys):
+    """全部免取：--plan 仍 rc=0，无待增量标的。"""
     wl = _write_watchlist(tmp_path, ["F1.SH"])
     store = tmp_path / "store"
     today = date.today()
-    upsert_store(store, {"F1.SH": [_bar(today - timedelta(days=(120 - i)), 100.0)
+    _write_store(store, {"F1.SH": [_bar(today - timedelta(days=(120 - i)), 100.0)
                                    for i in range(121)]})
     rc = m.main(["--watchlist", str(wl), "--plan", "--store", str(store)])
     assert rc == 0
-    assert "无需取数" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "免取" in out
+    assert "待增量" not in out
 
 
-def test_e2e_store_roundtrip_increment(tmp_path):
-    """端到端：首轮全量落库 → 二轮只喂一根新 K 线 → 库 +1 行、信号日滚到新日期。"""
+# ─────────────────────────────────────────────────────────────────────────
+# 端到端：直接读库出信号（两步式：fetch_quotes.py 刷库 → 本脚本读库计算）
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_e2e_read_store_roundtrip(tmp_path):
+    """端到端：库内 130 根（末根=今天）→ 读库出信号并回写 state；
+    模拟 fetch_quotes 增量刷库追加一根新 K 线后重跑 → 信号日滚动到新日期。"""
     codes = ["N1.SH", "N2.SH", "N3.SH"]
     watchlist = _write_watchlist(tmp_path, codes)
     store = tmp_path / "store"
     state = tmp_path / "state.json"
-    rows = _decline_rebound_rows(130)   # 2024-01-01 起 130 根，末日 2024-05-09
-    quotes = tmp_path / "quotes.json"
-    quotes.write_text(json.dumps({c: rows for c in codes}), encoding="utf-8")
-    rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
-                 "--data", str(quotes), "--store", str(store)])
+    _write_store(store, {c: _decline_rebound_rows() for c in codes})
+    args = ["--watchlist", str(watchlist), "--state", str(state),
+            "--store", str(store), "--out-dir", str(tmp_path / "out")]
+    rc = m.main(args)
     assert rc == 0
-    for c in codes:
-        assert store_status(store, c) == (130, "20240509")
-
-    inc = tmp_path / "inc.json"
-    inc.write_text(json.dumps({c: [_bar(date(2024, 5, 10), 96.0)] for c in codes}),
-                   encoding="utf-8")
-    rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
-                 "--data", str(inc), "--store", str(store)])
-    assert rc == 0
-    assert store_status(store, "N1.SH") == (131, "20240510")
     st = json.loads(state.read_text(encoding="utf-8"))
-    assert st["as_of"] == "2024-05-10"
+    assert st["as_of"] == date.today().isoformat()
+    assert list((tmp_path / "out").glob("plan_*.md"))    # 信号报告落盘
+
+    # 模拟增量刷库追加一根新 K 线（日期在末根之后）→ 信号日随之滚动
+    nxt = date.today() + timedelta(days=1)
+    _write_store(store, {c: [_bar(nxt, 96.0)] for c in codes})
+    rc = m.main(args)
+    assert rc == 0
+    st = json.loads(state.read_text(encoding="utf-8"))
+    assert st["as_of"] == nxt.isoformat()
 
 
-def test_e2e_fresh_codes_join_via_store(tmp_path):
-    """「免取」标的不出现在增量分片里，也应从行情库回读参与计算，不静默缺席。"""
+def test_e2e_all_pool_codes_participate(tmp_path):
+    """池内全部标的库内就绪（末根=今天）→ 全部参与选股，不静默缺席。"""
     codes = ["F1.SH", "F2.SH"]
     watchlist = _write_watchlist(tmp_path, codes)
     store = tmp_path / "store"
     today = date.today()
-    # 两只库内均已最新（130 根、末根=今天）→ --plan 会判「免取」，增量分片为空 {}
+    # 温和上涨全合格：130 根、末根=今天
     rows = [_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)]
-    upsert_store(store, {c: rows for c in codes})
-    inc = tmp_path / "inc.json"
-    inc.write_text("{}", encoding="utf-8")
+    _write_store(store, {c: rows for c in codes})
     state = tmp_path / "state.json"
     rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
-                 "--data", str(inc), "--store", str(store)])
+                 "--store", str(store), "--out-dir", str(tmp_path / "out")])
     assert rc == 0
     st = json.loads(state.read_text(encoding="utf-8"))
     assert st["as_of"] == today.isoformat()   # 库内末根即今天
