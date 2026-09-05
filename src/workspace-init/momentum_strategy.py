@@ -74,8 +74,9 @@ fail-closed（数据安全）：
         --state output/momentum/state.json
         —— 直接读库跑选股排名/过滤/调仓，产出组合信号与持仓（T 日收盘价成交），
         并回写持仓状态 state.json；报告落在 output/momentum/plan_<时间戳>.md。
-        标准输出只打印摘要（大盘状态/目标持仓）——「逐只动量与过滤」全池明细
-        仅写入报告文件、不打印到标准输出（观察池几十上百只时逐只长表会占满会话上下文）。
+        标准输出只打印摘要（大盘状态/目标持仓/调仓变动——含老仓被剔除的标的及原因）——
+        「逐只动量与过滤」全池明细仅写入报告文件、不打印到标准输出
+        （观察池几十上百只时逐只长表会占满会话上下文）。
   （--plan 仅作诊断：打印库内每只的根数/最后交易日/待补区间，不取数。）
 
 已有持仓通过 `--state` 传入（上一轮信号输出会自动回写 state.json；首次运行无 state 则视为空仓）。
@@ -684,6 +685,43 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
     else:
         lines.append("")
         lines.append("> 本次无目标持仓，空仓现金。")
+        lines.append("")
+
+    # 调仓变动说明（摘要的一部分）：老仓被剔除的标的是核心决策信息，必须显式列出及原因；
+    # 新增标的一行汇总即可（目标持仓表内已逐只标注「新增/老仓」）。
+    removed = sorted(current - set(target))
+    added = sorted(set(target) - current)
+    if removed or added:
+        lines.append("## 本次调仓变动")
+        lines.append("")
+        if removed:
+            lines.append(f"**剔除（老仓移出目标组合，zero_out 清仓）：** {len(removed)} 只")
+            lines.append("")
+            lines.append("| 代码 | 名称 | 快榜 | 慢榜 | 剔除说明 |")
+            lines.append("|---|---|---|---|---|")
+            for code in removed:
+                d = dm.get(code)
+                nm = d.name if d else "-"
+                rf = (d.rank_fast or "-") if d else "-"
+                rs = (d.rank_slow or "-") if d else "-"
+                if no_signal:
+                    why = "数据覆盖率不足 fail-closed，按兜底规则全退现金"
+                elif d is None:
+                    why = "不在本期观察池（已移出清单或库内无数据）"
+                elif not d.qualified:
+                    why = "过滤不合格：" + "；".join(d.filter_reasons)
+                else:
+                    why = f"快榜第 {d.rank_fast} / 慢榜第 {d.rank_slow}，均跌出前 {p.buffer_rank} 名缓冲"
+                lines.append(f"| {code} | {nm} | {rf} | {rs} | {why} |")
+            lines.append("")
+        if added:
+            names = "、".join(
+                f"{c}（{dm[c].name}）" if c in dm and dm[c].name else c for c in added
+            )
+            lines.append(f"**新增（开仓）：** {len(added)} 只——{names}。")
+            lines.append("")
+    else:
+        lines.append("> 与上期目标持仓一致，本次无调仓。")
         lines.append("")
 
     # 现金流/流动性提示（信号日成交量 10% 约束）

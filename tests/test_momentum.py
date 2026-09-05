@@ -397,13 +397,15 @@ def _run_strategy(tmp_path, extra_args: list[str]):
     return rc, json.loads(state.read_text(encoding="utf-8"))
 
 
-def test_market_guard_default_freezes_on_down(tmp_path):
+def test_market_guard_default_freezes_on_down(tmp_path, capsys):
     """默认开启：大盘下行 → signal=frozen，目标持仓只剩老仓，不新增。"""
     rc, state = _run_strategy(tmp_path, [])
     assert rc == 0
     assert state["regime"] == "down"          # 前提：行情确属下行
     assert state["signal"] == "frozen"
     assert state["target"] == ["OLD.SH"]      # 冻结新增，老仓原样保留
+    out = capsys.readouterr().out
+    assert "与上期目标持仓一致" in out        # 冻结无变动：摘要明示本次无调仓
 
 
 def test_market_guard_off_runs_on_down(tmp_path):
@@ -587,3 +589,42 @@ def test_e2e_stdout_summary_detail_only_in_file(tmp_path, capsys):
     assert "偏离MA20" in text and "过滤原因" in text
     for c in codes:
         assert c in text
+
+
+def test_e2e_removed_positions_reported(tmp_path, capsys):
+    """调仓变动说明：老仓被剔除时，摘要必须显式列出该标的及原因（stdout + md 均含）。
+
+    构造：N1/N2 温和上涨全合格（大盘 mom60 中位数为正，正常选股），
+    老仓 HOLD.SH 末段暴跌跌破 MA120 → 过滤不合格 → 移出目标组合（zero_out）。
+    """
+    codes = ["N1.SH", "N2.SH", "HOLD.SH"]
+    watchlist = _write_watchlist(tmp_path, codes)
+    store = tmp_path / "store"
+    today = date.today()
+    up_rows = [_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)]
+    # HOLD.SH：125 根 100 平稳 + 末 5 根暴跌到 50 → close 50 < MA120(≈97.5)，趋势关不过
+    crash_rows = ([_bar(today - timedelta(days=(129 - i)), 100.0) for i in range(125)]
+                  + [_bar(today - timedelta(days=(4 - i)), 50.0) for i in range(5)])
+    _write_store(store, {"N1.SH": up_rows, "N2.SH": up_rows, "HOLD.SH": crash_rows})
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({
+        "as_of": "2024-06-01", "cash_pct": 0.875, "signal": "signal", "regime": "up",
+        "target": ["HOLD.SH"], "positions": [{"ts_code": "HOLD.SH", "weight": 0.125}],
+    }), encoding="utf-8")
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
+                 "--store", str(store), "--out-dir", str(tmp_path / "out")])
+    assert rc == 0
+    st = json.loads(state.read_text(encoding="utf-8"))
+    assert "HOLD.SH" not in st["target"]               # 老仓确被剔除
+    assert set(st["target"]) == {"N1.SH", "N2.SH"}
+    out = capsys.readouterr().out
+    # 摘要（stdout）：调仓变动节 + 被剔除标的 + 原因 + 新增汇总
+    assert "本次调仓变动" in out
+    assert "剔除" in out and "HOLD.SH" in out
+    assert "过滤不合格" in out and "MA120" in out
+    assert "新增（开仓）" in out and "N1.SH" in out
+    # md 报告同样保留调仓变动节
+    plans = list((tmp_path / "out").glob("plan_*.md"))
+    assert plans
+    text = plans[0].read_text(encoding="utf-8")
+    assert "本次调仓变动" in text and "HOLD.SH" in text
