@@ -35,6 +35,7 @@ README_MD = """\
 | 个股分析（stock-valuation） | `output/reports/` | 个股估值研报（`research_*.md`） |
 | W底搜索（w-bottom-screener） | `output/w-bottom/` | W底筛选命中报告 |
 | 中期动量轮动（momentum-rotation） | `output/momentum/` | 动量组合信号报告、持仓状态 |
+| 景气板块选股（prosperity-picking） | `output/prosperity/` | 景气板块跟踪状态 `state.yaml`（在跟板块+剔除历史）与筛选/复核/选股报告 |
 | 共享行情库 | `output/quotes-store/` | 每标的一份 `<ts_code>.csv` 日线库（`fetch_quotes.py` 刷库写回；W底/动量只读共用） |
 | B站视频总结（bili-video-summary） | `output/videos/` | 视频转录产物：文字稿 / 元数据 / 音频 / whisper 模型缓存 |
 | 观察仓（watchlist-manager） | `output/watchlist/` | 观察仓标的池清单（本技能增删改；W底/动量筛选只读） |
@@ -201,6 +202,7 @@ DIRS = [
     "output/watchlist",
     "output/w-bottom",
     "output/momentum",
+    "output/prosperity",
     "output/quotes-store",
     "knowledge",
     "knowledge/stocks",

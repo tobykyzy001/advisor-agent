@@ -17,7 +17,8 @@ description: 观察仓清单管理技能。当用户要「把某只票加入观�
   - `stock-valuation` 结论为「贵/高估/等买点」→ 建议加入观察仓持续跟踪；
   - `copy-trade` 还原出值得盯但其价位未到的标的 → 纳入观察仓；
   - `w-bottom-screener` 命中形态后 → 委托 `set --BS` 留痕；
-  - `momentum-rotation` 出组合后 → 委托 `set --MR` 留痕。
+  - `momentum-rotation` 出组合后 → 委托 `set --MR` 留痕；
+  - `prosperity-picking` 选出景气标的（经用户确认）后 → 委托 `add` + `set --PS/--PS_DATE` 写入并打景气板块 key；板块日后剔除时按 `PS=<板块id>` 筛出该板块全部标的、逐个 `rm`。
 
 ## 数据契约（硬约束）
 
@@ -67,6 +68,7 @@ python manage_watchlist.py check 600519
 |---|---|---|
 | w-bottom-screener | `BS` / `BS_DATE` | `B`=命中 W底 / 确认日 |
 | momentum-rotation | `MR` | 排名数字或 `IN`/`OUT` |
+| prosperity-picking | `PS` / `PS_DATE` | 所属景气板块 id（小写英文短代号，如 `ai-compute`）/ 打标日期；板块剔除时按 `PS=<板块id>` 快速筛选删除 |
 
 **set 语义**：`set` 只更新**已在仓**的条目（code 不存在直接报错，防止手滑静默建条目）；先 `check` 或 `add` 再 `set`。
 

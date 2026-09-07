@@ -31,7 +31,8 @@ description: 工作区初始化技能。当用户要在「一个空目录 / 新�
 │   ├── videos/                         # B站视频转录产物
 │   ├── watchlist/                      # 观察仓清单 watchlist.yaml
 │   ├── w-bottom/                       # W底筛选取数缓存与报告
-│   └── momentum/                       # 动量轮动取数缓存、组合报告、持仓状态
+│   ├── momentum/                       # 动量轮动取数缓存、组合报告、持仓状态
+│   └── prosperity/                     # 景气板块选股：跟踪状态 state.yaml 与筛选/选股报告
 └── knowledge/                          # 个股知识库（清单索引 + 每票一份文件）
     ├── index.md                        # 清单索引（登记表）
     └── stocks/
@@ -85,6 +86,7 @@ python src/workspace-init/setup_runtime.py --target D:/my-advisor
   - 个股估值研报 → `stock-valuation`（写 `output/reports/`）
   - W底形态筛选 → `w-bottom-screener`（读 `output/watchlist/`、写 `output/w-bottom/`）
   - 中期动量轮动 → `momentum-rotation`（读 `output/watchlist/`、写 `output/momentum/`）
+  - 景气板块跟踪与选股 → `prosperity-picking`（写 `output/prosperity/`：`state.yaml` 由其脚本 `prosperity_state.py` 维护；选出的标的经用户确认后委托 `watchlist-manager` 写入观察仓并 `set --PS` 板块 key）
   - 观察仓清单维护 → `watchlist-manager`（写 `output/watchlist/`，是观察仓的唯一写入口；上面两个筛选技能只读）
   - 持仓复核 → `portfolio-tracker`（读/写 `output/portfolio/holdings.yaml`）
   - 景气行业快照 → `prosperity-analysis`（写 `output/sectors/`）

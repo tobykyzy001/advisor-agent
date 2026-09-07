@@ -58,7 +58,8 @@ pnpm exec dsh plugin --profile web add advisor-agent
 | `copy-trade` | 抄作业分析 | `url`（作业链接）、`html`（本地文件，可选） | ✅ |
 | `workspace-init` | 初始化工作区 | `target`（目标目录） | ✅ |
 | `w-bottom-screener` | 观察仓 W底筛选 | `lookback`、`trough_tol`（可选） | ✅ |
-| `momentum-rotation` | 中期动量排名 | `max_positions`、`top_n`（可选） | ✅ |
+| `momentum-rotation` | 中期动量排名 | `max_positions`、`top_n`、`market_guard`（可选） | ✅ |
+| `prosperity-picking` | 景气板块选股 | `action`（screen 筛选/复核景气板块、pick 选出景气标的）、`focus`（关注点，可选）、`count`（每板块目标支数，可选，默认 10） | ✅ |
 | `watchlist-manager` | 观察仓管理 | `action`（add/list/set/rm/check）、`code`（add/set/rm/check 必填）、`name`/`note`/`set_params`（可选） | ✅ |
 | `bili-video-summary` | B站视频总结 | `video`（链接/BV号） | ✅ |
 
@@ -69,7 +70,7 @@ pnpm exec dsh plugin --profile web add advisor-agent
 | 字段 | 含义 | 默认 |
 |---|---|---|
 | `enabled` | 总开关：关闭后侧边栏不显示入口 | `true` |
-| `enabledSkills` | 启用的 skill id 列表 | `["stock-valuation","feishen-trading-logic","copy-trade","workspace-init","w-bottom-screener","watchlist-manager","bili-video-summary"]` |
+| `enabledSkills` | 启用的 skill id 列表 | `["stock-valuation","feishen-trading-logic","copy-trade","workspace-init","w-bottom-screener","watchlist-manager","bili-video-summary","prosperity-picking"]` |
 | `defaultTarget` | 点「运行」默认投递目标：`new`(新开会话) / `current`(当前会话) | `new` |
 | `tushareToken` | tushare pro token：配置后随工具指令以 `--token` 参数传给 fetch_quotes.py；留空回退环境变量 `TUSHARE_TOKEN` / 工作区 `.env`（token 会出现在指令文本中） | `""` |
 

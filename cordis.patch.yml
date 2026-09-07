@@ -20,5 +20,6 @@
           - w-bottom-screener
           - watchlist-manager
           - bili-video-summary
+          - prosperity-picking
         defaultTarget: new
         tushareToken: ''

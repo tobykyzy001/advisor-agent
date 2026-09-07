@@ -136,8 +136,8 @@ def resolve_token(cli_token: str | None, env_file: Path) -> str:
 def normalize_code(raw: str) -> str:
     """把用户输入的代码规范化为 tushare 格式。
 
-    600519 → 600519.SH；000333 → 000333.SZ；833171/43xxxx → .BJ；5 位数字 → .HK；
-    已带后缀（.SH/.SZ/.BJ/.HK）原样保留。
+    600519 → 600519.SH；000333 → 000333.SZ；833171/43xxxx → .BJ；920xxx（北交所
+    920 号段）→ .BJ；5 位数字 → .HK；已带后缀（.SH/.SZ/.BJ/.HK）原样保留。
     """
     s = (raw or "").strip()
     if not s:
@@ -148,10 +148,11 @@ def normalize_code(raw: str) -> str:
         return s
     if len(s) == 5:
         return f"{s}.HK"
+    # 北交所：8/4 开头与 920 号段（与 manage_watchlist.py 同口径，920 判定先于沪市 9 开头）
+    if s[:3] == "920" or s.startswith(("4", "8")):
+        return f"{s}.BJ"
     if s.startswith(("6", "5", "9")):
         return f"{s}.SH"
-    if s.startswith(("4", "8")):
-        return f"{s}.BJ"
     return f"{s}.SZ"
 
 

@@ -50,12 +50,23 @@ const SETUP_RUNTIME_PATH = fileURLToPath(new URL('./workspace-init/setup_runtime
 // watchlist-manager 技能的脚本真源，供 stock-valuation / copy-trade 等流程委托调用。
 export const WATCHLIST_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/manage_watchlist.py'
 const WATCHLIST_PATH = fileURLToPath(new URL('./workspace-init/manage_watchlist.py', import.meta.url))
+// 景气板块跟踪状态（自包含脚本）的静态分发端点（与 watchlist-manager 同模式）：
+// 纯标准库、零 quantify 依赖。prosperity-picking 技能的脚本真源，管理
+// output/prosperity/state.yaml（在跟景气板块 + 剔除历史），供面板筛选/复核/选股流程调用。
+export const PROSPERITY_STATE_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/prosperity_state.py'
+const PROSPERITY_STATE_PATH = fileURLToPath(new URL('./workspace-init/prosperity_state.py', import.meta.url))
 // 统一行情取数 CLI（自包含脚本）的静态分发端点：直连 tushare pro REST API，
 // 对照本地 CSV 行情库 output/quotes-store/ 增量刷库 / 出估值快照。
 // w-bottom-screener / momentum-rotation 的取数步骤，以及估值、持仓复核、
 // 论据核查等即取即用场景统一走它（fetch_quotes.py --snapshot）。
 export const FETCH_QUOTES_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/fetch_quotes.py'
 const FETCH_QUOTES_PATH = fileURLToPath(new URL('./workspace-init/fetch_quotes.py', import.meta.url))
+// 机构业绩预测取数（自包含脚本）的静态分发端点：直连同花顺 F10「盈利预测」页，
+// 解析净利润/EPS 一致预期年度汇总、机构预测明细与详细指标历史实际值——
+// tushare 快照没有前瞻数据，前瞻PE/PEG 的分母统一走它（stock-valuation 方法论
+// 与 prosperity-picking 选股估值复用；纯标准库、无需 token、只读不写）。
+export const FETCH_FORECAST_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/fetch_forecast.py'
+const FETCH_FORECAST_PATH = fileURLToPath(new URL('./workspace-init/fetch_forecast.py', import.meta.url))
 // 飞神交易逻辑（非脚本型方法论资产）的静态分发端点：目标工作区可能是空目录，
 // 会话里没有 .agents/skills，因此不能靠 skill 调用；下载这三份 Markdown 后按其执行。
 export const FEISHEN_SKILL_ENDPOINT = '/plugins/advisor-agent/assets/feishen-trading-logic/SKILL.md'
@@ -69,6 +80,17 @@ const FEISHEN_ASSETS = [
   [FEISHEN_RULEBOOK_ENDPOINT, FEISHEN_RULEBOOK_PATH, 'feishen-trading-logic/feishen-rulebook.md'],
   [FEISHEN_ALIASES_ENDPOINT, FEISHEN_ALIASES_PATH, 'feishen-trading-logic/feishen-aliases.md'],
 ]
+// 个股估值方法论（非脚本型文档资产）的静态分发端点：与 feishen-trading-logic 同模式——
+// 目标工作区可能是空目录（会话里没有 .agents/skills），prosperity-picking 的选股估值
+// 步骤下载这两份文档后按其框架执行，任意工作区都能拿到完整 stock-valuation 方法论。
+export const STOCK_VAL_SKILL_ENDPOINT = '/plugins/advisor-agent/assets/stock-valuation/SKILL.md'
+export const STOCK_VAL_DATA_ENDPOINT = '/plugins/advisor-agent/assets/stock-valuation/data-source.md'
+const STOCK_VAL_SKILL_PATH = fileURLToPath(new URL('../.agents/skills/stock-valuation/SKILL.md', import.meta.url))
+const STOCK_VAL_DATA_PATH = fileURLToPath(new URL('../.agents/skills/stock-valuation/references/data-source.md', import.meta.url))
+const STOCK_VAL_ASSETS = [
+  [STOCK_VAL_SKILL_ENDPOINT, STOCK_VAL_SKILL_PATH, 'stock-valuation/SKILL.md'],
+  [STOCK_VAL_DATA_ENDPOINT, STOCK_VAL_DATA_PATH, 'stock-valuation/data-source.md'],
+]
 
 let Schema = null
 try {
@@ -78,7 +100,7 @@ try {
 }
 
 // 默认启用的技能固定来自 lib/client.js 内联注册表 ADVISOR_SKILLS 的 id 集合；若丢失，用最小兜底。
-export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'momentum-rotation', 'bili-video-summary', 'feishen-trading-logic']
+export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'momentum-rotation', 'bili-video-summary', 'feishen-trading-logic', 'prosperity-picking']
 
 const defaults = Object.freeze({
   enabled: true,
@@ -297,12 +319,38 @@ function mount(ctx, config = {}) {
       httpCtx.effect(
         () => httpCtx.webServer.register({
           kind: 'exact',
+          path: PROSPERITY_STATE_ENDPOINT,
+          handler: makeAssetHandler(PROSPERITY_STATE_PATH, 'workspace-init/prosperity_state.py'),
+        }),
+        'advisor-agent: prosperity-picking asset endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
           path: FETCH_QUOTES_ENDPOINT,
           handler: makeAssetHandler(FETCH_QUOTES_PATH, 'workspace-init/fetch_quotes.py'),
         }),
         'advisor-agent: fetch-quotes asset endpoint',
       )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: FETCH_FORECAST_ENDPOINT,
+          handler: makeAssetHandler(FETCH_FORECAST_PATH, 'workspace-init/fetch_forecast.py'),
+        }),
+        'advisor-agent: fetch-forecast asset endpoint',
+      )
       for (const [path, filePath, label] of FEISHEN_ASSETS) {
+        httpCtx.effect(
+          () => httpCtx.webServer.register({
+            kind: 'exact',
+            path,
+            handler: makeAssetHandler(filePath, label, 'text/markdown; charset=utf-8'),
+          }),
+          `advisor-agent: ${label} asset endpoint`,
+        )
+      }
+      for (const [path, filePath, label] of STOCK_VAL_ASSETS) {
         httpCtx.effect(
           () => httpCtx.webServer.register({
             kind: 'exact',
