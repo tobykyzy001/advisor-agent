@@ -118,6 +118,7 @@ WATCHLIST_YAML = """\
 # 观察仓清单：w-bottom-screener / momentum-rotation 共用的标的池（本文件已 gitignore，不入库）。
 # 增删改优先用 watchlist-manager 技能（manage_watchlist.py add/set/rm，代码自动规范化），也可手编：
 #   python manage_watchlist.py add 600519 --name 贵州茅台 --note 等回调 --source stock-valuation
+#   python manage_watchlist.py list 茅台 --where PS=ai-compute   # 列出/搜索（关键字+param 筛选）
 # 每条一行；ts_code 用 tushare 格式（A股带 .SH/.SZ/.BJ，港股如 00700.HK）。
 # market: A | HK；note 可选，纯展示；其他英文键为各工具委托写入的 param（如 BS/MR）。
 # 子字段 2 空格缩进（与 PyYAML safe_dump 同风格，量化核心 save_watchlist 写出的清单直接兼容）。

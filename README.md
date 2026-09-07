@@ -60,7 +60,7 @@ pnpm exec dsh plugin --profile web add advisor-agent
 | `w-bottom-screener` | 观察仓 W底筛选 | `lookback`、`trough_tol`（可选） | ✅ |
 | `momentum-rotation` | 中期动量排名 | `max_positions`、`top_n`、`market_guard`（可选） | ✅ |
 | `prosperity-picking` | 景气板块选股 | `action`（screen 筛选/复核景气板块、pick 选出景气标的）、`focus`（关注点，可选）、`count`（每板块目标支数，可选，默认 10） | ✅ |
-| `watchlist-manager` | 观察仓管理 | `action`（add/list/set/rm/check）、`code`（add/set/rm/check 必填）、`name`/`note`/`set_params`（可选） | ✅ |
+| `watchlist-manager` | 观察仓管理 | `action`（add/list/set/rm/check）、`code`（add/set/rm/check 必填）、`name`/`note`/`set_params`（可选）、`search`（list 搜索：关键字或 `--where KEY=VALUE`，可选） | ✅ |
 | `bili-video-summary` | B站视频总结 | `video`（链接/BV号） | ✅ |
 
 ### 配置项

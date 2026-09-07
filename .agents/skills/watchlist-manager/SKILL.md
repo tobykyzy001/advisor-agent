@@ -1,6 +1,6 @@
 ---
 name: watchlist-manager
-description: 观察仓清单管理技能。当用户要「把某只票加入观察仓/移出观察仓」「看看我的观察仓里都有谁」「维护观察标的池」时触发；也是投研流程的复用接口——stock-valuation 估值后想持续跟踪、copy-trade 挖到值得盯的标的时，由 agent 调本技能的脚本写入。核心：在 output/watchlist/watchlist.yaml（已忽略不入库，w-bottom-screener / momentum-rotation 共用的标的池）上做增删改查——add 代码自动规范化（600519→600519.SH）且幂等，set 支持任意 --param 透传（其他工具写死自己的英文键委托写入，如 w-bottom 的 --BS B、momentum 的 --MR 3），写入口唯一。脚本真源 src/workspace-init/manage_watchlist.py 自包含纯标准库、随插件包分发并由宿主静态端点提供下载执行；投研工具面板有表单入口（动作 add/list/set/rm/check + 代码/名称/备注/param 透传），对话式或投研流程内亦可触发。
+description: 观察仓清单管理技能。当用户要「把某只票加入观察仓/移出观察仓」「看看我的观察仓里都有谁」「在观察仓里搜一下某某」「维护观察标的池」时触发；也是投研流程的复用接口——stock-valuation 估值后想持续跟踪、copy-trade 挖到值得盯的标的时，由 agent 调本技能的脚本写入。核心：在 output/watchlist/watchlist.yaml（已忽略不入库，w-bottom-screener / momentum-rotation 共用的标的池）上做增删改查——add 代码自动规范化（600519→600519.SH）且幂等，set 支持任意 --param 透传（其他工具写死自己的英文键委托写入，如 w-bottom 的 --BS B、momentum 的 --MR 3），list 支持关键字搜索与 --where param 筛选（如按 PS=<板块id> 精确筛出某景气板块全部标的），写入口唯一。脚本真源 src/workspace-init/manage_watchlist.py 自包含纯标准库、随插件包分发并由宿主静态端点提供下载执行；投研工具面板有表单入口（动作 add/list/set/rm/check + 代码/名称/备注/param 透传 + list 搜索），对话式或投研流程内亦可触发。
 ---
 
 # 观察仓管理（Watchlist Manager）
@@ -11,14 +11,14 @@ description: 观察仓清单管理技能。当用户要「把某只票加入观�
 
 ## 何时触发
 
-- 用户说「把 600519 加入观察仓」「移出观察仓」「我的观察仓里都有谁」「观察仓加个票盯着」。
-- **投研工具面板**：侧边栏「观察仓管理」卡片（动作 add/list/set/rm/check + 代码/名称/备注/param 透传），点「运行」投递执行。
+- 用户说「把 600519 加入观察仓」「移出观察仓」「我的观察仓里都有谁」「观察仓加个票盯着」，或「观察仓里搜一下茅台」「把 ai-compute 板块的观察标的列出来」。
+- **投研工具面板**：侧边栏「观察仓管理」卡片（动作 add/list/set/rm/check + 代码/名称/备注/param 透传 + list 搜索），点「运行」投递执行。
 - 投研流程内委托调用：
   - `stock-valuation` 结论为「贵/高估/等买点」→ 建议加入观察仓持续跟踪；
   - `copy-trade` 还原出值得盯但其价位未到的标的 → 纳入观察仓；
   - `w-bottom-screener` 命中形态后 → 委托 `set --BS` 留痕；
   - `momentum-rotation` 出组合后 → 委托 `set --MR` 留痕；
-  - `prosperity-picking` 选出景气标的（经用户确认）后 → 委托 `add` + `set --PS/--PS_DATE` 写入并打景气板块 key；板块日后剔除时按 `PS=<板块id>` 筛出该板块全部标的、逐个 `rm`。
+  - `prosperity-picking` 选出景气标的（经用户确认）后 → 委托 `add` + `set --PS/--PS_DATE` 写入并打景气板块 key；板块日后剔除时用 `list --where PS=<板块id>` 精确筛出该板块全部标的、逐个 `rm`。
 
 ## 数据契约（硬约束）
 
@@ -44,8 +44,20 @@ description: 观察仓清单管理技能。当用户要「把某只票加入观�
 > 全局参数 `--watchlist`（清单路径，默认 `output/watchlist/watchlist.yaml`）与 `--now`（指定当前日期，测试用）**须放在子命令之前**。
 
 ```bash
-# 列出观察仓（无子命令时的默认动作）
+# 列出观察仓（无子命令时的默认动作；显式 list 子命令等价）
 python manage_watchlist.py
+python manage_watchlist.py list
+
+# list 搜索：关键字（不区分大小写，包含匹配 代码/名称/备注/来源/param 值）
+python manage_watchlist.py list 茅台
+python manage_watchlist.py list 600519
+
+# list 按 param 筛选：--where KEY=VALUE 精确匹配，单写 KEY 表示键存在；可重复、多条件 AND
+python manage_watchlist.py list --where PS=ai-compute     # 筛出某景气板块全部标的
+python manage_watchlist.py list --where BS                # 筛出所有命中过 W底的标的
+
+# 关键字与 param 筛选可组合（先关键字后 param，都满足才命中）
+python manage_watchlist.py list 白酒 --where PS=ai-compute
 
 # 加入观察仓：代码自动规范化，幂等（已存在则只更新 name/note/source，保留首加日期）
 python manage_watchlist.py add 600519 --name 贵州茅台 --note 等回调到 1500 --source stock-valuation
@@ -59,6 +71,8 @@ python manage_watchlist.py set 000858 --MR 3
 python manage_watchlist.py rm 600519
 python manage_watchlist.py check 600519
 ```
+
+**list 搜索语义**：关键字与 `--where` 都是**只读筛选**，命中条目按原格式展示（表头带命中数与筛选条件）；无命中输出「命中 0 只」且退出码 0（查询结果而非命令失败）。`--where` 键名合法性与 `set` 一致（ASCII 字母/数字/下划线），`KEY=` 空值直接拒绝防呆。
 
 **代码规范化规则**：已带 `.SH/.SZ/.BJ/.HK` 后缀的校验后原样保留（港股补零到 5 位）；6 位数字按首位判交易所（`6→.SH`、`0/3→.SZ`、`4/8/920→.BJ`）；1~5 位数字视为港股补零加 `.HK`。识别不了（如 9 开头疑似 B 股、含字母）直接报错，不猜。
 

@@ -231,6 +231,104 @@ def test_list_default_and_output(tmp_dir, capsys):
     assert "BS=B" in out
 
 
+def test_list_explicit_subcommand(tmp_dir, capsys):
+    """显式 list 子命令（无筛选）与无子命令默认 list 行为一致。"""
+    wl = _wl(tmp_dir)
+    mw.main(["--watchlist", str(wl), "add", "600519", "--name", "贵州茅台"])
+    capsys.readouterr()  # 丢弃种子输出，只校验 list 的输出
+    rc = mw.main(["--watchlist", str(wl), "list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "观察仓共 1 只" in out
+    assert "600519.SH" in out
+
+
+def _seed_for_search(wl: Path) -> None:
+    """三条标的 + 两类 param：茅台(BS=B) / 五粮液(无 param) / 宁德时代(PS=battery)。"""
+    mw.main(["--watchlist", str(wl), "--now", "2025-06-01", "add", "600519",
+             "--name", "贵州茅台", "--note", "等回调到1500", "--source", "stock-valuation"])
+    mw.main(["--watchlist", str(wl), "--now", "2025-06-01", "add", "000858", "--name", "五粮液"])
+    mw.main(["--watchlist", str(wl), "--now", "2025-06-02", "add", "300750",
+             "--name", "宁德时代", "--note", "动量榜第3", "--source", "prosperity-picking"])
+    mw.main(["--watchlist", str(wl), "set", "600519", "--BS", "B"])
+    mw.main(["--watchlist", str(wl), "set", "300750", "--PS", "battery", "--PS_DATE", "2025-06-02"])
+
+
+def test_list_search_keyword(tmp_dir, capsys):
+    """关键字搜索：不区分大小写、包含匹配 代码/名称/备注/来源/param 值。"""
+    wl = _wl(tmp_dir)
+    _seed_for_search(wl)
+    capsys.readouterr()  # 丢弃种子输出，只校验 list 的输出
+    # 名称命中 1 条，其余不出现
+    rc = mw.main(["--watchlist", str(wl), "list", "茅台"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "命中 1 只" in out and "关键字:茅台" in out
+    assert "600519.SH" in out and "000858.SZ" not in out and "300750.SZ" not in out
+    # 代码子串命中
+    mw.main(["--watchlist", str(wl), "list", "600519"])
+    assert "600519.SH" in capsys.readouterr().out
+    # 备注命中
+    mw.main(["--watchlist", str(wl), "list", "回调"])
+    assert "600519.SH" in capsys.readouterr().out
+    # 来源命中
+    mw.main(["--watchlist", str(wl), "list", "prosperity-picking"])
+    out = capsys.readouterr().out
+    assert "300750.SZ" in out and "600519.SH" not in out
+    # param 值命中
+    mw.main(["--watchlist", str(wl), "list", "battery"])
+    assert "300750.SZ" in capsys.readouterr().out
+
+
+def test_list_search_where(tmp_dir, capsys):
+    """--where KEY=VALUE 按 param 精确筛选（景气板块剔除的快速筛选用法）。"""
+    wl = _wl(tmp_dir)
+    _seed_for_search(wl)
+    capsys.readouterr()  # 丢弃种子输出，只校验 list 的输出
+    rc = mw.main(["--watchlist", str(wl), "list", "--where", "PS=battery"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "命中 1 只" in out and "param:PS=battery" in out
+    assert "300750.SZ" in out and "600519.SH" not in out
+    # 单写 KEY = 键存在即命中（不带 PS 的两条不出现）
+    mw.main(["--watchlist", str(wl), "list", "--where", "PS"])
+    out = capsys.readouterr().out
+    assert "300750.SZ" in out and "600519.SH" not in out and "000858.SZ" not in out
+    # 多条件 AND
+    mw.main(["--watchlist", str(wl), "list", "--where", "PS=battery", "--where", "PS_DATE=2025-06-02"])
+    assert "300750.SZ" in capsys.readouterr().out
+    mw.main(["--watchlist", str(wl), "list", "--where", "PS=battery", "--where", "PS_DATE=1999-01-01"])
+    out = capsys.readouterr().out
+    assert "命中 0 只" in out and "300750.SZ" not in out
+
+
+def test_list_search_combined_and_no_match(tmp_dir, capsys):
+    """关键字 + --where 组合（先关键字后 param，两者都满足才命中）；无命中退出码 0。"""
+    wl = _wl(tmp_dir)
+    _seed_for_search(wl)
+    capsys.readouterr()  # 丢弃种子输出，只校验 list 的输出
+    rc = mw.main(["--watchlist", str(wl), "list", "宁德", "--where", "PS=battery"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "命中 1 只" in out and "关键字:宁德" in out and "param:PS=battery" in out
+    assert "300750.SZ" in out
+    # 组合无命中（茅台不在 battery 板块）
+    rc = mw.main(["--watchlist", str(wl), "list", "茅台", "--where", "PS=battery"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "命中 0 只" in out and "600519.SH" not in out
+
+
+def test_list_where_rejects_bad_spec(tmp_dir):
+    """--where 键名防呆：中文键拒绝（与 set 同约定）、KEY= 空值拒绝。"""
+    wl = _wl(tmp_dir)
+    mw.main(["--watchlist", str(wl), "add", "600519"])
+    with pytest.raises(SystemExit):
+        mw.main(["--watchlist", str(wl), "list", "--where", "板块=ai"])
+    with pytest.raises(SystemExit):
+        mw.main(["--watchlist", str(wl), "list", "--where", "PS="])
+
+
 def test_rewrite_keeps_pyyaml_style(tmp_dir):
     """PyYAML safe_dump 风格（条目顶格、子键 2 空格）就是标准契约格式：
     本脚本读宽容、写入保持 2 空格（仅规范化引号/键序），不破坏量化核心写出的清单。"""

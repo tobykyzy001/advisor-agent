@@ -2,6 +2,12 @@
 
 用法（用系统 python，纯标准库，无需联网）：
   python manage_watchlist.py                          # list：列出全部观察标的
+  python ... list                                     # 同上（显式 list 子命令）
+  python ... list 茅台                                # list 搜索：关键字（不区分大小写，
+                                                      # 包含匹配 代码/名称/备注/来源/param 值）
+  python ... list --where PS=ai-compute               # list 按 param 筛选：KEY=VALUE 精确匹配，
+                                                      # 单写 KEY 表示键存在；可重复，多条件 AND
+  python ... list 白酒 --where PS=ai-compute          # 关键字与 param 筛选可组合
   python ... add 600519 --name 贵州茅台 --note 等回调 --source stock-valuation
   python ... set 600519 --BS B --BS_DATE 2025-06-03   # 任意 param 透传（其他工具委托写入）
   python ... rm 600519                                # 移出观察仓
@@ -45,6 +51,7 @@ DEFAULT_HEADER = [
     "# w-bottom-screener / momentum-rotation 只读此清单；增删改用 watchlist-manager：",
     "#   python manage_watchlist.py add 600519 --name 贵州茅台 --note 等回调",
     "#   python manage_watchlist.py set 600519 --BS B        # 其他工具委托写 param",
+    "#   python manage_watchlist.py list 茅台 --where PS=ai-compute   # 搜索/param 筛选",
     "# 格式硬约束（消费方极简解析）：每条以 - ts_code: 作首键、子字段 2 空格缩进、键只用英文。",
     "watchlist:",
 ]
@@ -236,12 +243,73 @@ def parse_kv_pairs(tokens: list[str]) -> dict[str, str]:
     return pairs
 
 
+def _parse_where(specs: list[str] | None) -> list[tuple[str, str | None]]:
+    """解析 --where 条件为 (键, 期望值|None) 列表。
+
+    KEY=VALUE → 精确匹配（值为字符串相等）；单写 KEY → 键存在且非空。
+    键名合法性与 set 一致（只认 ASCII 字母/数字/下划线），值可为任意文本。
+    """
+    conds: list[tuple[str, str | None]] = []
+    for spec in specs or []:
+        key, eq, val = spec.partition("=")
+        if not _KEY_RE.fullmatch(key):
+            raise SystemExit(
+                f"--where 的键 {key!r} 只能用英文字母/数字/下划线（param 键名约定，与 set 一致）"
+            )
+        if eq and val == "":
+            raise SystemExit(
+                f"--where {spec!r} 缺少值：写 KEY=VALUE 精确匹配，或只写 KEY 表示键存在"
+            )
+        conds.append((key, val if eq else None))
+    return conds
+
+
+def _match_where(item: dict, conds: list[tuple[str, str | None]]) -> bool:
+    """全部 --where 条件同时满足（AND语义）。"""
+    for key, want in conds:
+        got = item.get(key)
+        if want is None:
+            if got is None or got == "":
+                return False
+        elif str(got) != want:
+            return False
+    return True
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     _, items = load(args.watchlist, create=False)
     if not items:
         print(f"观察仓为空（清单：{args.watchlist}）。用 add 子命令加入标的，或先运行 workspace-init 初始化。")
         return 0
-    print(f"观察仓共 {len(items)} 只（清单：{args.watchlist}）：")
+    total = len(items)
+    # 无子命令默认进 list 时 namespace 上没有 keyword/where 属性，getattr 兜底为全量列出
+    keyword = (getattr(args, "keyword", None) or "").strip()
+    conds = _parse_where(getattr(args, "where", None))
+    if keyword:
+        kw = keyword.lower()
+        items = [
+            it
+            for it in items
+            if any(kw in str(v).lower() for v in it.values() if v not in (None, ""))
+        ]
+    if conds:
+        items = [it for it in items if _match_where(it, conds)]
+    if keyword or conds:
+        filters = []
+        if keyword:
+            filters.append(f"关键字:{keyword}")
+        if conds:
+            filters.append("param:" + "、".join(k if v is None else f"{k}={v}" for k, v in conds))
+        head = (
+            f"观察仓共 {total} 只，命中 {len(items)} 只（{'；'.join(filters)}）"
+            f"（清单：{args.watchlist}）"
+        )
+        if not items:
+            print(head + "。")
+            return 0
+        print(head + "：")
+    else:
+        print(f"观察仓共 {len(items)} 只（清单：{args.watchlist}）：")
     for i, it in enumerate(items, 1):
         parts = [f"{i}. {it.get('ts_code', '')}", it.get("name") or "-", f"[{it.get('market') or 'A'}]"]
         if it.get("added_at"):
@@ -359,6 +427,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="cmd")
 
+    p_list = sub.add_parser("list", help="列出观察仓（支持关键字搜索与 param 筛选）")
+    p_list.add_argument(
+        "keyword",
+        nargs="?",
+        default=None,
+        help="搜索关键字（不区分大小写，包含匹配 代码/名称/备注/来源/param 值）",
+    )
+    p_list.add_argument(
+        "--where",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help="按 param 筛选：KEY=VALUE 精确匹配，单写 KEY 表示键存在；可重复，多条件 AND"
+        "（如 --where PS=ai-compute）",
+    )
+
     p_add = sub.add_parser("add", help="加入观察仓（已存在则更新 name/note/source）")
     p_add.add_argument("code", help="股票代码：600519 / 600519.SH / 00700 / 00700.HK")
     p_add.add_argument("--name", default=None, help="名称（便于报告展示）")
@@ -388,6 +472,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.cmd == "list":
+        return cmd_list(args)
     if args.cmd == "add":
         return cmd_add(args)
     if args.cmd == "set":
