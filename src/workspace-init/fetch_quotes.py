@@ -18,8 +18,10 @@ agent 下载执行（与 w_bottom_screen.py / momentum_strategy.py 同一分发�
      —— 对照本地 CSV 行情库 output/quotes-store/ 给每只定区间：
        免取（库内已含今天 K 线）/ 增量（库内最后日期+1 → 今天）/ 全量（新票或库内
        根数不足 --min-bars，取近 --full-days 自然日），逐只调 API 拉日线后**幂等合并**
-       写回 CSV（按 trade_date 去重、新行覆盖同日旧行），输出仅打印每只一行摘要，
-       **绝不打印 K 线明细**。
+       写回 CSV（按 trade_date 去重、新行覆盖同日旧行）。输出为**汇总式**：只报
+       成功/失败与入库根数汇总，逐票「入库 N 根」明细与 K 线一律不打印（大池子
+       逐行刷屏只会白耗 agent 会话 token），仅异常（取数失败 / 全量后仍不足
+       min-bars）逐只列出。
   2) 快照（--snapshot）：
      python fetch_quotes.py --snapshot 600519.SH[,000333.SZ]
      —— 打印每只最新收盘 / 涨跌幅 / 换手 / PE / PB / 市值 / 股息率（小数据，可进会话），
@@ -459,13 +461,20 @@ def cmd_sync(args: argparse.Namespace) -> int:
         except OSError as e:
             print(f"[error] 行情库写回失败：{e}")
             return 3
-        for code in merged:
-            rows = after.get(code) or []
-            if rows:
-                print(f"  {code} 入库 {len(merged[code])} 根新 K 线（累计 {len(rows)} 根，"
-                      f"最新 {rows[-1]['trade_date']}）")
-            else:
-                print(f"  {code} 增量区间无新数据（库内最新即当前最新交易日）")
+        # 汇总式输出：逐票「入库 N 根」整屏刷进 agent 会话上下文是纯 token 损耗，
+        # 正常标的只报一行汇总，仅异常（全量后仍不足 min-bars）逐只列出。
+        with_new = [c for c in merged if merged[c]]
+        total_new = sum(len(merged[c]) for c in with_new)
+        if with_new:
+            print(f"入库汇总：{len(with_new)} 只有新数据、共 +{total_new} 根 K 线；"
+                  f"其余 {len(merged) - len(with_new)} 只库内无新数据。")
+        else:
+            print("入库汇总：增量区间无新数据（库内均已是最新交易日）。")
+        for code in full_codes:
+            n_bars = len(after.get(code) or [])
+            if n_bars < args.min_bars:
+                print(f"  [warn] {code} 全量取数后仅 {n_bars} 根（min-bars="
+                      f"{args.min_bars}），历史不足将被策略计算自动排除。")
 
     if failures:
         print(f"\n完成：{len(codes) - len(failures)} 只成功 / {len(failures)} 只失败：")

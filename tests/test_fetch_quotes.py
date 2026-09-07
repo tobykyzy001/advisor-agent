@@ -324,7 +324,7 @@ def test_ts_post_retry_exhausted(monkeypatch):
 
 
 def test_sync_full_fetch_new_code(tmp_path, capsys, monkeypatch):
-    """新票 → 全量：按 --full-days 自然日窗口取数，幂等入库并打印一行摘要。"""
+    """新票 → 全量：按 --full-days 自然日窗口取数，幂等入库并打印汇总摘要。"""
     rows = [_bar(date.today() - timedelta(days=i), 10.0 + i) for i in range(3)]
     fake, calls = _fake_api(daily_rows=rows)
     monkeypatch.setattr(fq, "ts_post_retry", fake)
@@ -340,7 +340,8 @@ def test_sync_full_fetch_new_code(tmp_path, capsys, monkeypatch):
     assert fq.store_status(store, "600519.SH")[0] == 3
     out = capsys.readouterr().out
     assert "增量 0 / 全量 1 / 免取 0" in out
-    assert "入库 3 根" in out
+    assert "共 +3 根 K 线" in out          # 汇总式入库摘要（不逐票罗列）
+    assert "[warn] 600519.SH 全量取数后仅 3 根（min-bars=30）" in out  # 异常逐只：不足 min-bars
     assert "全部成功" in out
 
 
@@ -359,7 +360,7 @@ def test_sync_incremental(tmp_path, capsys, monkeypatch):
     assert fq.store_status(store, "600519.SH") == (31, today.strftime("%Y%m%d"))
     out = capsys.readouterr().out
     assert "增量 1 / 全量 0 / 免取 0" in out
-    assert "入库 1 根" in out
+    assert "1 只有新数据、共 +1 根 K 线" in out   # 汇总式：只数 + 根数，不逐票罗列
 
 
 def test_sync_all_fresh_no_api(tmp_path, capsys, monkeypatch):

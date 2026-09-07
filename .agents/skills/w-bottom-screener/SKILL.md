@@ -61,7 +61,7 @@ python scripts/fetch_quotes.py --watchlist output/watchlist/watchlist.yaml --min
 
 - 观察仓清单在 `output/watchlist/watchlist.yaml`（已被 gitignore，不入库，属个人关注信息）。
 - 清单模板由 `workspace-init` 技能生成（`init_workspace.py` 的 WATCHLIST_YAML 是唯一模板真源）；本技能对清单**只读不写**——往池子加/删标的用 `watchlist-manager`（`manage_watchlist.py add/rm`），命中形态后如需留痕也**委托**它写入（`manage_watchlist.py set <code> --BS B --BS_DATE <确认日>`），不自己改这份 yaml。
-- 刷库输出只有每只一行入库摘要（免取/增量 N 根/全量 N 根），**K 线明细不进会话**；把摘要原样转达即可。
+- 刷库输出为汇总式（成功/失败、有新数据的只数与总根数、异常标的逐只列出），**K 线与逐票明细不进会话**；一两句话转达结果即可，不要逐只复述。
 - 失败分流：退出码 2（缺 token）→ 转告用户配置 `TUSHARE_TOKEN`（环境变量 / 工作区 `.env` / `--token`）；退出码 1/3（网络或部分标的失败）→ 转告失败清单，**不要跳过刷库直接判定**。
 - `--min-bars 30`：库内不足 30 根的自动全量重取近 `--full-days 90` 自然日（覆盖 lookback + 均量缓冲）。
 

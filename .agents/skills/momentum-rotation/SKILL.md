@@ -90,7 +90,7 @@ description: 中期动量轮动选股技能。当用户要求「给观察股票�
 python scripts/fetch_quotes.py --watchlist output/watchlist/watchlist.yaml --min-bars 121 --full-days 420
 ```
 
-- 刷库输出只有每只一行入库摘要（免取/增量 N 根/全量 N 根），**K 线明细不进会话**；把摘要原样转达即可。
+- 刷库输出为汇总式（成功/失败、有新数据的只数与总根数、异常标的逐只列出），**K 线与逐票明细不进会话**；一两句话转达结果即可，不要逐只复述。
 - 失败分流：退出码 2（缺 token）→ 转告用户配置 `TUSHARE_TOKEN`（环境变量 / 工作区 `.env` / `--token`）；退出码 1/3（网络或部分标的失败）→ 转告失败清单，**不要跳过刷库直接计算**（覆盖率关卡会 fail-closed）。
 
 ```bash
