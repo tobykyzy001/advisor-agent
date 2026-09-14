@@ -67,6 +67,13 @@ const FETCH_QUOTES_PATH = fileURLToPath(new URL('./workspace-init/fetch_quotes.p
 // 与 prosperity-picking 选股估值复用；纯标准库、无需 token、只读不写）。
 export const FETCH_FORECAST_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/fetch_forecast.py'
 const FETCH_FORECAST_PATH = fileURLToPath(new URL('./workspace-init/fetch_forecast.py', import.meta.url))
+// 研报阅读器（自包含脚本）的静态分发端点：把一份卖方研报（本地文件或 http(s) 链接）
+// 拆成可核查的主张，做一轮「只找证据」的批判性核查（有证据证伪才替换/作废，
+// 拿不出证据就默认采信研报估算），再用采信后的预测推估值桥
+// （前瞻PE/PEG/逐年PE/合理价区间/现价隐含要求/方向结论）。证据文件由 fetch_quotes.py
+// 快照与 fetch_forecast.py 一致预期的原样输出喂入，数字不经过会话手工转抄。
+export const REPORT_READER_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/report_reader.py'
+const REPORT_READER_PATH = fileURLToPath(new URL('./workspace-init/report_reader.py', import.meta.url))
 // 飞神交易逻辑（非脚本型方法论资产）的静态分发端点：目标工作区可能是空目录，
 // 会话里没有 .agents/skills，因此不能靠 skill 调用；下载这三份 Markdown 后按其执行。
 export const FEISHEN_SKILL_ENDPOINT = '/plugins/advisor-agent/assets/feishen-trading-logic/SKILL.md'
@@ -100,7 +107,7 @@ try {
 }
 
 // 默认启用的技能固定来自 lib/client.js 内联注册表 ADVISOR_SKILLS 的 id 集合；若丢失，用最小兜底。
-export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'momentum-rotation', 'bili-video-summary', 'feishen-trading-logic', 'prosperity-picking']
+export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'report-reading', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'momentum-rotation', 'bili-video-summary', 'feishen-trading-logic', 'prosperity-picking']
 
 const defaults = Object.freeze({
   enabled: true,
@@ -339,6 +346,14 @@ function mount(ctx, config = {}) {
           handler: makeAssetHandler(FETCH_FORECAST_PATH, 'workspace-init/fetch_forecast.py'),
         }),
         'advisor-agent: fetch-forecast asset endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: REPORT_READER_ENDPOINT,
+          handler: makeAssetHandler(REPORT_READER_PATH, 'workspace-init/report_reader.py'),
+        }),
+        'advisor-agent: report-reading asset endpoint',
       )
       for (const [path, filePath, label] of FEISHEN_ASSETS) {
         httpCtx.effect(

@@ -33,6 +33,7 @@ README_MD = """\
 |---|---|---|
 | 抄作业（copy-trade） | `output/copy-trade/` | 作业回测产物：原始HTML、解析消息流、回测报告、别名覆盖 |
 | 个股分析（stock-valuation） | `output/reports/` | 个股估值研报（`research_*.md`） |
+| 研报阅读（report-reading） | `output/research/` | 研报正文抽取、claims、行情/一致预期证据文件与阅读报告（`report_*.md`/`.json`） |
 | W底搜索（w-bottom-screener） | `output/w-bottom/` | W底筛选命中报告 |
 | 中期动量轮动（momentum-rotation） | `output/momentum/` | 动量组合信号报告、持仓状态 |
 | 景气板块选股（prosperity-picking） | `output/prosperity/` | 景气板块跟踪状态 `state.yaml`（在跟板块+剔除历史）与筛选/复核/选股报告 |
@@ -195,6 +196,7 @@ DIRS = [
     "output",
     "output/copy-trade",
     "output/reports",
+    "output/research",
     "output/portfolio",
     "output/sectors",
     "output/skill-state",
