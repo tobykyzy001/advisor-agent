@@ -59,7 +59,7 @@ pnpm exec dsh plugin --profile web add advisor-agent
 | `workspace-init` | 初始化工作区 | `target`（目标目录） | ✅ |
 | `w-bottom-screener` | 观察仓 W底筛选 | `lookback`、`trough_tol`（可选） | ✅ |
 | `momentum-rotation` | 中期动量排名 | `max_positions`、`top_n`、`market_guard`（可选） | ✅ |
-| `prosperity-picking` | 景气板块选股 | `action`（screen 筛选/复核景气板块、pick 选出景气标的）、`focus`（关注点，可选）、`count`（每板块目标支数，可选，默认 10） | ✅ |
+| `prosperity-picking` | 景气板块选股 | `action`（screen 筛选/复核景气板块、pick 选出景气标的）、`scope`（范围：all 全量 / new 仅扫当前新热点 / only 仅指定板块，可选，默认 all）、`sectors`（范围=only 时指定板块 id 或中文名）、`focus`（关注点，可选）、`count`（每板块目标支数，可选，默认 10） | ✅ |
 | `watchlist-manager` | 观察仓管理 | `action`（add/list/set/rm/check）、`code`（add/set/rm/check 必填）、`name`/`note`/`set_params`（可选）、`search`（list 搜索：关键字或 `--where KEY=VALUE`，可选） | ✅ |
 | `report-reading` | 研报阅读 | `entry`（研报入口：本地 .txt/.md/.html 路径或 http(s) 链接；PDF 需先转文本） | ✅ |
 | `bili-video-summary` | B站视频总结 | `video`（链接/BV号） | ✅ |
@@ -91,7 +91,7 @@ pnpm exec dsh plugin --profile web add advisor-agent
 - 客户端 bundle 用 `window.__ModuleLoader__.load({ id, factory })` 注册，返回 `{ name, inject, apply(ctx) }`。
 - 两个槽位：`sidebar.footer.action`（侧边栏入口）+ `settings.plugin.item`（设置卡片）。配置走宿主 `/plugins/advisor-agent/config` 端点（GET/PATCH，本地回环校验）。
 - 投递：
-  - 新开会话：`ctx.get('workspaces').connectWorkspace(workspaceId)` 拿回已在 list 里的新 session id，再 `sessions.binding(id).session.prompt(...)`。
+  - 新开会话：`ctx.get('uiWorkspace').startSession()` 交给官方工作区组合层解析（当前工作区 → 最近 → 第一个）并打开新会话；再订阅 `sessions.list` 快照拿到新的 `current`，最后 `sessions.binding(id).session.prompt(...)`。`connectWorkspace` 是 `uiWorkspace` 服务的方法，纯 `workspaces` 控制器上不存在。
   - 当前会话：`sessions.list.getSnapshot().current` → `sessions.binding(current).session.prompt(...)`。
 - `ADVISOR_SKILLS` 是 schema 驱动的通用表单**单一数据源**；渲染、必填校验、`buildInstruction` 都由它驱动。
 
