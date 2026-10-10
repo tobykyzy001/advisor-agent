@@ -12,7 +12,9 @@ agent 下载执行（与 workspace-init/init_workspace.py 同一分发模式）�
 
 本地 CSV 行情库（与 momentum_strategy.py 共享 output/quotes-store/，由
 fetch_quotes.py 刷库写回）：
-- 每只标的一份 CSV：output/quotes-store/<ts_code>.csv，列 trade_date,open,high,low,close,vol。
+- 每只标的一份 CSV：output/quotes-store/<ts_code>.csv，列
+  trade_date,open,high,low,close,vol,pct_chg（本脚本只读 OHLC/vol；
+  pct_chg 列供动量策略做前复权计算，形态判定不消费该列）。
 - 判定前做数据门禁：库内无数据 / 最后交易日距今超过 10 个自然日的标的视为缺口，
   fail-closed 列出缺口并提示先跑 fetch_quotes.py，不拿陈旧数据误出形态。
 

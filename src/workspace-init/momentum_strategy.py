@@ -14,10 +14,19 @@ agent 下载执行（与 workspace-init/init_workspace.py、w_bottom_screen.py �
 策略口径（长短期双榜 + 老仓粘性，详细见 .agents/skills/momentum-rotation/SKILL.md）
 ────────────────────────────────────────────────────────────────────────────────
 
-动量：对每只股票算三档区间涨幅 mom = close[-1] / close[-N] - 1：
+动量：对每只股票算三档区间涨幅 mom = close[-1] / close[-1-N] - 1：
   mom20  = 20 交易日涨幅（短期强度，选股快榜）
   mom120 = 120 交易日涨幅（中期强度，选股慢榜）
   mom60  = 60 交易日涨幅（仅用于判断大盘状态，不参与选股排名）
+
+复权口径（重要）：
+  所有动量 / 均线 / 反追高指标一律基于**前复权收盘价**计算——除权除息（分红、
+  送转、拆合股）造成的价格跳空不再扭曲 mom 与 MA。实现方式：行情库每行带
+  pct_chg（tushare 日涨跌幅，除权日为除权口径），从最新一根往前复利连乘得到
+  前复权序列：adj[i] = adj[i+1] / (1 + pct_chg[i+1] / 100)，锚定最新真实收盘价
+  （adj[-1] = close[-1]，前复权价只用于算比值与均线，报告中的「现价」仍显示
+  真实收盘价）。行情库缺 pct_chg 列或链路中断（任何一行缺值）→ 该标的
+  fail-closed 剔除并提示先刷库，不拿不复权价凑合计算。
 
 大盘状态（fail-closed 的市场过滤器）：
   取池内全部股票 mom60 的「中位数」：
@@ -61,10 +70,12 @@ fail-closed（数据安全）：
 ────────────────────────────────────────────────────────────────────────────────
 
 本地 CSV 行情库（与 w_bottom_screen.py 共享 output/quotes-store/，由 fetch_quotes.py 刷库写回）：
-- 每只标的一份 CSV：output/quotes-store/<ts_code>.csv，列 trade_date,open,high,low,close,vol。
-- 判定前做数据门禁：库内无数据 / 最后交易日距今超过 10 个自然日的标的视为缺口，
-  fail-closed 列出缺口并提示先跑 fetch_quotes.py；历史根数由覆盖率机制兜底
-  （不足 121 根的标的剔除并计入覆盖率，低于下限不出信号）。
+- 每只标的一份 CSV：output/quotes-store/<ts_code>.csv，列
+  trade_date,open,high,low,close,vol,pct_chg（pct_chg 为前复权计算原料）。
+- 判定前做数据门禁：库内无数据 / 最后交易日距今超过 10 个自然日 / pct_chg
+  断链（缺列或缺值）的标的视为缺口，fail-closed 列出缺口并提示先跑
+  fetch_quotes.py；历史根数由覆盖率机制兜底（不足 121 根的标的剔除并计入
+  覆盖率，低于下限不出信号）。
 
 两层式工作流（取数与计算分离，取数统一走 fetch_quotes.py）：
  1) python fetch_quotes.py --watchlist output/watchlist/watchlist.yaml --min-bars 121 --full-days 420
@@ -109,16 +120,23 @@ class Bar:
     high: float = 0.0
     low: float = 0.0
     volume: float = 0.0
+    pct_chg: float | None = None   # 日涨跌幅（%，除权日为除权口径）；None=缺失（fail-closed）
+    adj_close: float = 0.0  # 前复权收盘价（由 pct_chg 复利连乘回推，锚定最新真实收盘价）
 
 
 @dataclass
 class Series:
     symbol: str
     bars: list[Bar] = field(default_factory=list)
+    adj_ok: bool = False  # 前复权链路是否完好（pct_chg 全程无缺失、无脏值）
 
     @property
     def closes(self) -> list[float]:
         return [b.close for b in self.bars]
+
+    @property
+    def adj_closes(self) -> list[float]:
+        return [b.adj_close for b in self.bars]
 
 
 @dataclass
@@ -285,9 +303,42 @@ def rows_to_series(symbol: str, rows: list[dict]) -> Series:
             high=_to_float(row.get("high")) or 0.0,
             low=_to_float(row.get("low")) or 0.0,
             volume=vol,
+            pct_chg=_to_float(row.get("pct_chg")),  # 缺失保持 None，不冒充平盘 0.0
         ))
     bars.sort(key=lambda b: b.date)
-    return Series(symbol=symbol, bars=bars)
+    series = Series(symbol=symbol, bars=bars)
+    series.adj_ok = apply_forward_adjust(series)
+    return series
+
+
+def apply_forward_adjust(series: Series) -> bool:
+    """就地给 series.bars 计算前复权收盘价 adj_close（按日期升序）。
+
+    算法：从最后一根（最新）往前复利连乘——adj[-1] = close[-1]（锚定真实价），
+    adj[i] = adj[i+1] / (1 + pct_chg[i+1] / 100)。pct_chg 是 tushare 日涨跌幅
+    （除权日基于除权昨收），连乘后除权跳空被还原为「持股不动口径」的连续收益，
+    等价于前复权价序列（同比例缩放，mom/MA 等比值类指标不受锚点影响）。
+
+    返回 False 的情况（前复权链路不可信，调用方须 fail-closed）：
+    - 任何一根 pct_chg 缺失（None）——旧版六列库或增量行未带涨跌幅；
+    - 任何一根 pct_chg ≤ -100（脏数据）。
+    平盘日的 pct_chg=0.0 是有效值，与缺失严格区分。
+    """
+    bars = series.bars
+    if not bars:
+        return False
+    if any(b.pct_chg is None for b in bars):
+        return False
+    bars[-1].adj_close = bars[-1].close
+    for i in range(len(bars) - 2, -1, -1):
+        pc = bars[i + 1].pct_chg
+        if pc is None:  # 上方 any() 已拦截，双保险
+            return False
+        r = 1.0 + pc / 100.0
+        if r <= 0:
+            return False
+        bars[i].adj_close = bars[i + 1].adj_close / r
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -314,9 +365,18 @@ def ma(closes: list[float], window: int) -> float | None:
 
 
 def compute_metrics(series: Series, p: StrategyParams) -> Decision:
-    """对单只股票计算全部动量/均线指标。数据不足时 has_history=False。"""
+    """对单只股票计算全部动量/均线指标。数据不足时 has_history=False。
+
+    全部指标基于前复权收盘价（series.adj_closes）计算；Decision.close 仍记录
+    真实收盘价（报告与流动性约束用），mom/MA/偏离/近5日均为前复权口径。
+    pct_chg 断链（adj_ok=False）→ has_history=False + filter_reasons 标注，
+    与主流程门禁构成双保险。
+    """
     d = Decision(ts_code=series.symbol)
-    closes = series.closes
+    closes = series.adj_closes
+    if not series.adj_ok:
+        d.filter_reasons.append("pct_chg 缺失或断链，无法前复权计算")
+        return d
     if len(closes) < p.history_min:
         d.filter_reasons.append(f"历史仅 {len(closes)} 日，不足 {p.history_min}")
         return d
@@ -324,7 +384,7 @@ def compute_metrics(series: Series, p: StrategyParams) -> Decision:
 
     m20, m120, m60 = mom(closes, p.win_short), mom(closes, p.win_mid), mom(closes, p.win_market)
     a20, a120 = ma(closes, p.ma_short), ma(closes, p.ma_trend)
-    d.close = closes[-1]
+    d.close = series.bars[-1].close
     d.mom20 = m20 if m20 is not None else 0.0
     d.mom120 = m120 if m120 is not None else 0.0
     d.mom60 = m60 if m60 is not None else 0.0
@@ -453,8 +513,9 @@ def save_state(path: Path, state: dict) -> None:
 # 本地 CSV 行情库（每标的一份，增量合并，幂等）
 # ═══════════════════════════════════════════════════════════════════════════
 
-#: CSV 列固定：与 --plan 提示的取数字段一致，w_bottom_screen.py 共用同一库结构
-CSV_FIELDS = ["trade_date", "open", "high", "low", "close", "vol"]
+#: CSV 列固定：与 fetch_quotes.py 写库结构一致（pct_chg 为前复权计算原料），
+#: w_bottom_screen.py 共用同一库（其读取不受多出的列影响）
+CSV_FIELDS = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg"]
 
 
 def store_csv_path(store_dir: Path, ts_code: str) -> Path:
@@ -563,7 +624,8 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
         return 1
     pool_codes = [it.ts_code for it in items]
 
-    # 数据门禁：读库 + 新鲜度校验（缺口 fail-closed；历史根数交给覆盖率机制兜底）
+    # 数据门禁：读库 + 新鲜度校验 + 前复权链路校验（缺口/断链均 fail-closed；
+    # 历史根数交给覆盖率机制兜底）
     today = date.today()
     raw: dict[str, list] = {}
     gaps: list[str] = []
@@ -590,7 +652,23 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
 
     # 覆盖池 = 观察仓全部标的（读库模式，缺口已被数据门禁挡掉）
     universe = sorted(set(raw) | set(pool_codes))
-    series_list = [rows_to_series(ts, rows) for ts, rows in raw.items()]
+    series_list: list[Series] = []
+    adj_broken: list[str] = []
+    for ts, rows in raw.items():
+        s = rows_to_series(ts, rows)
+        if not s.adj_ok:
+            adj_broken.append(ts)   # pct_chg 缺列/缺值 → 前复权链路断，不拿不复权价凑合
+            continue
+        series_list.append(s)
+    if adj_broken:
+        print("[error] 以下标的行情库缺 pct_chg 列或存在断链（旧版六列库/增量行未带涨跌幅），"
+              "无法前复权计算，本次 fail-closed 不出信号：")
+        for c in adj_broken:
+            print(f"  - {c}")
+        print("请先刷库回补（fetch_quotes.py 会自动检测缺口并重取对应区间）：")
+        print(f"  python fetch_quotes.py --watchlist {watchlist_path}"
+              f" --min-bars {p.history_min} --full-days 420")
+        return 1
 
     # 覆盖率 fail-closed
     total = len(universe)
@@ -644,6 +722,8 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
     lines.append(f"- 信号日：{signal_date}（按 T 日收盘价成交）")
     lines.append(f"- 观察池标的数：{total}")
     lines.append(f"- 数据覆盖率：{coverage:.1%}")
+    lines.append("- 复权口径：前复权（pct_chg 复利连乘；mom/MA 均为前复权价计算，"
+                 "现价为真实收盘价）")
     regime_note = ""
     if regime == "down":
         regime_note = "（冻结新增）" if p.market_guard else "（大盘状态关已关闭，照常选股）"

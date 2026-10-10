@@ -28,7 +28,9 @@ agent 下载执行（与 w_bottom_screen.py / momentum_strategy.py 同一分发�
        顺手把拉到的日线增量写回行情库。供估值 / 持仓复核 / 论据核查等即取即用场景。
 
 本地 CSV 行情库（与 w_bottom_screen.py / momentum_strategy.py 共享 output/quotes-store/）：
-- 每只标的一份 CSV：<store>/<ts_code>.csv，列 trade_date,open,high,low,close,vol。
+- 每只标的一份 CSV：<store>/<ts_code>.csv，列 trade_date,open,high,low,close,vol,pct_chg。
+- pct_chg 为 tushare 日涨跌幅（%）：除权日按除权口径（基于除权昨收），是动量策略
+  前复权计算的原料；旧版六列库（无 pct_chg）在刷库时自动按缺口区间回补。
 - 幂等合并：同一批增量重复合并结果不变，中途失败重跑无副作用。
 
 token 来源（优先级）：--token 参数 > 环境变量 TUSHARE_TOKEN > 工作区 .env 里的
@@ -53,8 +55,9 @@ from pathlib import Path
 
 TUSHARE_API = "http://api.tushare.pro"
 
-#: CSV 列固定：与 w_bottom_screen.py / momentum_strategy.py 共用同一库结构
-CSV_FIELDS = ["trade_date", "open", "high", "low", "close", "vol"]
+#: CSV 列固定：与 w_bottom_screen.py / momentum_strategy.py 共用同一库结构。
+#: pct_chg（日涨跌幅 %，除权日为除权口径）供动量策略复利连乘构造前复权序列。
+CSV_FIELDS = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg"]
 
 #: 日线接口：A股（沪深北）走 daily，港股走 hk_daily（按 ts_code 后缀分流）
 _HK_SUFFIX = ".HK"
@@ -244,6 +247,38 @@ def store_status(store_dir: Path, ts_code: str) -> tuple[int, str | None]:
     return len(rows), max(r["trade_date"] for r in rows)
 
 
+def store_pct_gap(store_dir: Path, ts_code: str) -> bool:
+    """库内该标的的 pct_chg 列是否有缺口（需重取回补）。
+
+    判定口径：CSV 内存在**任一行**缺 pct_chg 即视为有缺口——旧版六列库整列缺失、
+    或历史某段增量行未带涨跌幅，都会被检出。整列缺失时用表头识别（表头里没有
+    pct_chg 列 → 全部行都缺）；有列但个别行为空同样算缺口（脏数据不凑合）。
+    库内无数据的标的返回 False（由根数判定走全量，无需在此处理）。
+    """
+    fp = store_csv_path(store_dir, ts_code)
+    if not fp.exists():
+        return False
+    with fp.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None or "pct_chg" not in (reader.fieldnames or []):
+            return True   # 旧版六列表头：整列缺失
+        for r in reader:
+            if not (r.get("pct_chg") or "").strip():
+                return True   # 有列但个别行缺值（脏行不凑合）
+    return False
+
+
+def store_first_date(store_dir: Path, ts_code: str) -> str | None:
+    """库内该标的的首个交易日（YYYYMMDD）；无数据返回 None。"""
+    fp = store_csv_path(store_dir, ts_code)
+    if not fp.exists():
+        return None
+    rows = _read_store_rows(fp)
+    if not rows:
+        return None
+    return min(r["trade_date"] for r in rows)
+
+
 def _next_date_str(trade_date: str) -> str:
     """'20250201'/'2025-02-01' → 次日 '20250202'（解析失败则原样返回）。"""
     d = _to_date(trade_date)
@@ -364,7 +399,7 @@ def daily_api_name(ts_code: str) -> str:
     return "hk_daily" if ts_code.upper().endswith(_HK_SUFFIX) else "daily"
 
 
-#: 日线取数字段（多取 pre_close/pct_chg 供快照用；写库仍只写 CSV_FIELDS 六列）
+#: 日线取数字段（多取 pre_close 供快照推算涨跌幅；pct_chg 写库保留供前复权计算）
 _DAILY_FIELDS = "ts_code,trade_date,open,high,low,close,pre_close,pct_chg,vol"
 
 #: 每日指标字段（快照模式的估值部分；daily_basic 仅覆盖 A 股）
@@ -399,11 +434,23 @@ def cmd_sync(args: argparse.Namespace) -> int:
     today = date.today().strftime("%Y%m%d")
 
     # 对照库内状态分三类：增量（补尾巴）/ 全量（新票或根数不足）/ 免取（已到今天）
+    # 另：库内 pct_chg 列存在缺口（旧版六列库 / 增量时段未回补）的标的重取
+    # 「库内首日 → 今天」整段（覆盖全部历史行，幂等合并后缺口闭合），
+    # 避免动量策略的前复权计算出现断链。
     fetch_ranges: dict[str, tuple[str, str]] = {}
     full_codes: list[str] = []
     fresh_codes: list[str] = []
+    gap_codes: list[str] = []
     for code in codes:
         n, last = store_status(store_dir, code)
+        if n and last and store_pct_gap(store_dir, code):
+            # pct_chg 有缺口：重取库内首日 → 今天（库内首日早于 full-days 窗口时
+            # 以库内首日为准，保证全部历史行都被带涨跌幅的新行覆盖）
+            first = store_first_date(store_dir, code)
+            start = min(first, (date.today() - timedelta(days=args.full_days)).strftime("%Y%m%d"))
+            fetch_ranges[code] = (start, today)
+            gap_codes.append(code)
+            continue
         if n >= args.min_bars and last:
             start = _next_date_str(last)
             if start > today:
@@ -417,6 +464,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
     print(f"标的 {len(codes)} 只：增量 {len(fetch_ranges)} / 全量 {len(full_codes)}"
           f" / 免取 {len(fresh_codes)}；今天={today}，min-bars={args.min_bars}，"
           f"full-days={args.full_days}")
+    if gap_codes:
+        print(f"其中 {len(gap_codes)} 只存在 pct_chg 缺口（旧版六列库或历史行未含涨跌幅），"
+              f"已排入重取回补：{'、'.join(gap_codes)}")
     if not fetch_ranges and not full_codes:
         print("全部标的库内均已最新，无需取数。")
         return 0

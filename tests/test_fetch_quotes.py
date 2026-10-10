@@ -38,9 +38,9 @@ fq = _load_module()
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def _bar(d: date, c: float = 10.0, vol: float = 100.0) -> dict:
+def _bar(d: date, c: float = 10.0, vol: float = 100.0, pct_chg: float = 0.0) -> dict:
     return {"trade_date": d.strftime("%Y%m%d"), "open": c, "high": c, "low": c,
-            "close": c, "vol": vol}
+            "close": c, "vol": vol, "pct_chg": pct_chg}
 
 
 class _FakeResp:
@@ -205,7 +205,7 @@ def test_upsert_store_creates_csv(tmp_path):
     merged = fq.upsert_store(tmp_path, {"A.SH": [_bar(date(2025, 1, 2), 1.5),
                                                  _bar(date(2025, 1, 3), 1.6)]})
     fp = tmp_path / "A.SH.csv"
-    assert fp.read_text(encoding="utf-8").splitlines()[0] == "trade_date,open,high,low,close,vol"
+    assert fp.read_text(encoding="utf-8").splitlines()[0] == "trade_date,open,high,low,close,vol,pct_chg"
     assert [r["trade_date"] for r in merged["A.SH"]] == ["20250102", "20250103"]
     assert fq.store_status(tmp_path, "A.SH") == (2, "20250103")
 
@@ -507,3 +507,90 @@ def test_snapshot_failure_lists_code(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "取数失败" in out
     assert "000000.SZ" in out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# pct_chg 缺口检测与刷库回补（旧版六列库自动升级）
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _write_legacy_six_col_store(store: Path, code: str, n: int = 130) -> None:
+    """手写旧版六列库（无 pct_chg 列），模拟历史遗留行情库。"""
+    import csv as _csv
+    fp = store / f"{code}.csv"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    with fp.open("w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["trade_date", "open", "high", "low", "close", "vol"])
+        for i in range(n):
+            w.writerow([(date.today() - timedelta(days=n - 1 - i)).strftime("%Y%m%d"),
+                        10, 10, 10, 10 + i * 0.1, 100])
+
+
+def test_store_pct_gap_legacy_six_col(tmp_path):
+    """旧版六列库（表头无 pct_chg）→ 判有缺口。"""
+    _write_legacy_six_col_store(tmp_path, "600519.SH")
+    assert fq.store_pct_gap(tmp_path, "600519.SH") is True
+
+
+def test_store_pct_gap_complete(tmp_path):
+    """七列完整库（每行都有 pct_chg）→ 无缺口。"""
+    fq.upsert_store(tmp_path, {"600519.SH": [
+        _bar(date(2025, 1, 1), 10.0, pct_chg=0.0),
+        _bar(date(2025, 1, 2), 10.5, pct_chg=5.0),
+    ]})
+    assert fq.store_pct_gap(tmp_path, "600519.SH") is False
+
+
+def test_store_pct_gap_partial_missing(tmp_path):
+    """有 pct_chg 列但个别行为空 → 同样判缺口（脏数据不凑合）。"""
+    import csv as _csv
+    fq.upsert_store(tmp_path, {"600519.SH": [_bar(date(2025, 1, 1), 10.0, pct_chg=0.0)]})
+    fp = tmp_path / "600519.SH.csv"
+    with fp.open("a", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["20250102", 10, 10, 10, 10.5, 100, ""])   # pct_chg 空值
+    assert fq.store_pct_gap(tmp_path, "600519.SH") is True
+
+
+def test_store_pct_gap_missing_file(tmp_path):
+    """库内无该标的 → 不判缺口（由根数判定走全量）。"""
+    assert fq.store_pct_gap(tmp_path, "NOPE.SH") is False
+
+
+def test_sync_refills_pct_gap_from_store_first_date(tmp_path, capsys, monkeypatch):
+    """旧版六列库刷库 → 自动按「库内首日 → 今天」重取回补，缺口行被带涨跌幅的新行覆盖。"""
+    store = tmp_path / "store"
+    _write_legacy_six_col_store(store, "600519.SH", n=130)
+    today = date.today()
+    # API 回的新行带 pct_chg（七列）
+    refill = [_bar(today - timedelta(days=130 - i), 10.0 + i * 0.1, pct_chg=1.0)
+              for i in range(131)]
+    fake, calls = _fake_api(daily_rows=refill)
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+    rc = fq.main(["--codes", "600519.SH", "--token", "t",
+                  "--store", str(store), "--interval", "0", "--min-bars", "30"])
+    assert rc == 0
+    # 重取区间起点 = 库内首日（不是末根+1，也不是 full-days 窗口截断）
+    first_date = (today - timedelta(days=129)).strftime("%Y%m%d")
+    assert calls[0][1]["start_date"] == first_date
+    out = capsys.readouterr().out
+    assert "pct_chg 缺口" in out
+    # 回补后库内无缺口、行数按去重合并
+    assert fq.store_pct_gap(store, "600519.SH") is False
+    assert fq.store_status(store, "600519.SH")[0] == 131
+
+
+def test_sync_no_gap_no_refill(tmp_path, capsys, monkeypatch):
+    """七列完整库 → 不触发缺口回补，正常增量。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fq.upsert_store(store, {"600519.SH": [
+        _bar(today - timedelta(days=30 - i), 10.0, pct_chg=0.1) for i in range(30)]})
+    fake, calls = _fake_api(daily_rows=[_bar(today, 10.5, pct_chg=0.5)])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+    rc = fq.main(["--codes", "600519.SH", "--token", "t",
+                  "--store", str(store), "--interval", "0"])
+    assert rc == 0
+    assert calls[0][1]["start_date"] == today.strftime("%Y%m%d")   # 正常增量区间
+    assert "pct_chg 缺口" not in capsys.readouterr().out

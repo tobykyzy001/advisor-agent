@@ -41,6 +41,7 @@ market_regime = m.market_regime
 rank_fast_slow = m.rank_fast_slow
 build_target = m.build_target
 rows_to_series = m.rows_to_series
+apply_forward_adjust = m.apply_forward_adjust
 Series = m.Series
 
 
@@ -83,9 +84,30 @@ def test_ma_insufficient():
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def _bar(d: date, c: float, vol: float = 100.0) -> dict:
+def _bar(d: date, c: float, vol: float = 100.0, pct_chg: float | None = None) -> dict:
     return {"trade_date": d.strftime("%Y%m%d"), "open": c, "high": c, "low": c,
-            "close": c, "vol": vol}
+            "close": c, "vol": vol, "pct_chg": pct_chg}
+
+
+def _fill_pct(rows: list[dict]) -> list[dict]:
+    """就地补齐与收盘价自洽的 pct_chg（%）：首行 0.0，其后 (close/prev-1)*100。
+
+    填完后前复权序列与原收盘序列等比（锚定末根），适合构造「复权前后应无差异」的用例。
+    """
+    prev = None
+    for r in rows:
+        c = float(r["close"])
+        if r.get("pct_chg") in (None, ""):
+            r["pct_chg"] = 0.0 if not prev else (c / prev - 1) * 100
+        prev = c
+    return rows
+
+
+def _series(symbol: str, rows: list[dict]) -> Series:
+    """rows → Series，并应用前复权（断言链路完好——本文件默认喂自洽数据）。"""
+    s = rows_to_series(symbol, rows)
+    assert apply_forward_adjust(s) is True
+    return s
 
 
 def _make_series(symbol: str, n: int, start: float = 100.0, step: float = 1.0,
@@ -97,7 +119,7 @@ def _make_series(symbol: str, n: int, start: float = 100.0, step: float = 1.0,
         c = start + i * step
         rows.append(_bar(d, c))
         d = d + timedelta(days=1)
-    return rows_to_series(symbol, rows)
+    return _series(symbol, _fill_pct(rows))
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -140,7 +162,7 @@ def test_filter_trend_below_ma120():
         rows.append(_bar(d0 + timedelta(days=i), 100.0 + i))       # 一路涨到 224
     for i in range(5):
         rows.append(_bar(d0 + timedelta(days=125 + i), 1.0))       # 暴跌到底
-    s = rows_to_series("C.SH", rows)
+    s = _series("C.SH", _fill_pct(rows))
     dec = compute_metrics(s, StrategyParams())
     m._filter(dec, StrategyParams())
     assert dec.qualified is False
@@ -149,11 +171,13 @@ def test_filter_trend_below_ma120():
 
 def test_filter_rush_too_fast():
     """反追高关：近5日涨幅 > 24% → 不合格。"""
-    s = _make_series("D.SH", 130, start=100.0, step=0.0)  # 平稳
-    # 手动改造最后几根，制造急涨
-    bars = s.bars
+    rows = []
+    d0 = date(2024, 1, 1)
+    for i in range(125):
+        rows.append(_bar(d0 + timedelta(days=i), 100.0))           # 长期 100 平稳
     for i in range(5):
-        bars[-1 - i].close = 100.0 + (5 - i) * 10.0  # 近5日从100涨到~150 → rush5≈50%
+        rows.append(_bar(d0 + timedelta(days=125 + i), 100.0 + (i + 1) * 10.0))  # 5日从100涨到150
+    s = _series("D.SH", _fill_pct(rows))
     dec = compute_metrics(s, StrategyParams())
     m._filter(dec, StrategyParams())
     assert dec.qualified is False
@@ -167,7 +191,7 @@ def test_filter_dev_ma20_too_much():
     for i in range(125):
         rows.append(_bar(d0 + timedelta(days=i), 100.0))  # 长期 100 平稳
     rows[-1] = _bar(d0 + timedelta(days=124), 150.0)  # 最后一天跳到 150
-    s = rows_to_series("E.SH", rows)
+    s = _series("E.SH", _fill_pct(rows))
     dec = compute_metrics(s, StrategyParams())
     m._filter(dec, StrategyParams())
     assert dec.qualified is False
@@ -306,9 +330,12 @@ def test_build_target_empty_pool():
 
 def test_rows_to_series_dirty_and_sort():
     rows = [
-        {"trade_date": "20250110", "close": 10.5, "open": 10, "high": 11, "low": 9, "vol": 100},
-        {"trade_date": "20250109", "close": 10.0, "open": 10, "high": 11, "low": 9, "vol": 120},
-        {"trade_date": "20250108", "close": None, "open": 10, "high": 11, "low": 9, "vol": 100},
+        {"trade_date": "20250110", "close": 10.5, "open": 10, "high": 11, "low": 9,
+         "vol": 100, "pct_chg": 1.0},
+        {"trade_date": "20250109", "close": 10.0, "open": 10, "high": 11, "low": 9,
+         "vol": 120, "pct_chg": 0.5},
+        {"trade_date": "20250108", "close": None, "open": 10, "high": 11, "low": 9,
+         "vol": 100, "pct_chg": 0.0},
     ]
     s = rows_to_series("G.SH", rows)
     assert len(s.bars) == 2  # 脏行被跳过
@@ -373,7 +400,7 @@ def _decline_rebound_rows(n: int = 130, end: date | None = None) -> list[dict]:
     closes = [100.0] * 60 + [108.0] * 10 + [88.0] * 50 + [86.0 + i for i in range(10)]
     assert len(closes) == n, "本用例固定 130 根窗口"
     d0 = end - timedelta(days=n - 1)
-    return [_bar(d0 + timedelta(days=i), c) for i, c in enumerate(closes)]
+    return _fill_pct([_bar(d0 + timedelta(days=i), c) for i, c in enumerate(closes)])
 
 
 def _run_strategy(tmp_path, extra_args: list[str]):
@@ -429,13 +456,14 @@ def test_store_status_missing(tmp_path):
 
 def test_store_status_and_read_after_write(tmp_path):
     """写入两根 → (2, 最后交易日)；read_store 按日期升序回读。"""
-    _write_store(tmp_path, {"A.SH": [_bar(date(2025, 1, 2), 1.5),
-                                     _bar(date(2025, 1, 3), 1.6)]})
+    _write_store(tmp_path, {"A.SH": _fill_pct([
+        _bar(date(2025, 1, 2), 1.5),
+        _bar(date(2025, 1, 3), 1.6)])})
     assert m.store_status(tmp_path, "A.SH") == (2, "20250103")
     rows = m.read_store(tmp_path, "A.SH")
     assert [r["trade_date"] for r in rows] == ["20250102", "20250103"]
     assert (tmp_path / "A.SH.csv").read_text(encoding="utf-8").splitlines()[0] \
-        == "trade_date,open,high,low,close,vol"
+        == "trade_date,open,high,low,close,vol,pct_chg"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -481,12 +509,12 @@ def test_plan_incremental_full_and_fresh(tmp_path, capsys):
     wl = _write_watchlist(tmp_path, codes)
     store = tmp_path / "store"
     # OLD.SH：121 根老数据 → 待增量，start = 最后日期(2024-04-30) + 1
-    _write_store(store, {"OLD.SH": [_bar(date(2024, 1, 1) + timedelta(days=i), 100.0)
-                                    for i in range(121)]})
+    _write_store(store, {"OLD.SH": _fill_pct(
+        [_bar(date(2024, 1, 1) + timedelta(days=i), 100.0) for i in range(121)])})
     # FRESH.SH：121 根且末根是今天 → 免取
     today = date.today()
-    _write_store(store, {"FRESH.SH": [_bar(today - timedelta(days=(120 - i)), 100.0)
-                                      for i in range(121)]})
+    _write_store(store, {"FRESH.SH": _fill_pct(
+        [_bar(today - timedelta(days=(120 - i)), 100.0) for i in range(121)])})
     rc = m.main(["--watchlist", str(wl), "--plan", "--store", str(store)])
     assert rc == 0
     out = capsys.readouterr().out
@@ -533,7 +561,7 @@ def test_e2e_read_store_roundtrip(tmp_path):
 
     # 模拟增量刷库追加一根新 K 线（日期在末根之后）→ 信号日随之滚动
     nxt = date.today() + timedelta(days=1)
-    _write_store(store, {c: [_bar(nxt, 96.0)] for c in codes})
+    _write_store(store, {c: [_bar(nxt, 96.0, pct_chg=-1.0)] for c in codes})
     rc = m.main(args)
     assert rc == 0
     st = json.loads(state.read_text(encoding="utf-8"))
@@ -547,7 +575,7 @@ def test_e2e_all_pool_codes_participate(tmp_path):
     store = tmp_path / "store"
     today = date.today()
     # 温和上涨全合格：130 根、末根=今天
-    rows = [_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)]
+    rows = _fill_pct([_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)])
     _write_store(store, {c: rows for c in codes})
     state = tmp_path / "state.json"
     rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
@@ -556,8 +584,6 @@ def test_e2e_all_pool_codes_participate(tmp_path):
     st = json.loads(state.read_text(encoding="utf-8"))
     assert st["as_of"] == today.isoformat()   # 库内末根即今天
     assert set(st["target"]) == set(codes)    # 两只都参与选股（温和上涨全合格）
-
-
 def test_e2e_stdout_summary_detail_only_in_file(tmp_path, capsys):
     """标准输出只打印摘要：「逐只动量与过滤」全池明细仅写入 md 报告、不进 stdout。
 
@@ -569,7 +595,7 @@ def test_e2e_stdout_summary_detail_only_in_file(tmp_path, capsys):
     store = tmp_path / "store"
     today = date.today()
     # 温和上涨全合格：130 根、末根=今天
-    rows = [_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)]
+    rows = _fill_pct([_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)])
     _write_store(store, {c: rows for c in codes})
     rc = m.main(["--watchlist", str(watchlist), "--state", str(tmp_path / "state.json"),
                  "--store", str(store), "--out-dir", str(tmp_path / "out")])
@@ -601,10 +627,10 @@ def test_e2e_removed_positions_reported(tmp_path, capsys):
     watchlist = _write_watchlist(tmp_path, codes)
     store = tmp_path / "store"
     today = date.today()
-    up_rows = [_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)]
+    up_rows = _fill_pct([_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)])
     # HOLD.SH：125 根 100 平稳 + 末 5 根暴跌到 50 → close 50 < MA120(≈97.5)，趋势关不过
-    crash_rows = ([_bar(today - timedelta(days=(129 - i)), 100.0) for i in range(125)]
-                  + [_bar(today - timedelta(days=(4 - i)), 50.0) for i in range(5)])
+    crash_rows = _fill_pct([_bar(today - timedelta(days=(129 - i)), 100.0) for i in range(125)]
+                           + [_bar(today - timedelta(days=(4 - i)), 50.0) for i in range(5)])
     _write_store(store, {"N1.SH": up_rows, "N2.SH": up_rows, "HOLD.SH": crash_rows})
     state = tmp_path / "state.json"
     state.write_text(json.dumps({
@@ -628,3 +654,125 @@ def test_e2e_removed_positions_reported(tmp_path, capsys):
     assert plans
     text = plans[0].read_text(encoding="utf-8")
     assert "本次调仓变动" in text and "HOLD.SH" in text
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 前复权链路（pct_chg 复利连乘 → adj_close；断链 fail-closed）
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_forward_adjust_basic_chain():
+    """复利连乘：adj[i] = adj[i+1] / (1 + pct_chg[i+1]/100)，锚定最新真实收盘价。"""
+    rows = [
+        _bar(date(2025, 1, 1), 100.0, pct_chg=0.0),
+        _bar(date(2025, 1, 2), 110.0, pct_chg=10.0),   # +10%
+        _bar(date(2025, 1, 3), 121.0, pct_chg=10.0),   # +10%
+    ]
+    s = _series("ADJ.SH", rows)
+    assert s.adj_ok is True
+    assert s.bars[-1].adj_close == pytest.approx(121.0)     # 锚定最新真实价
+    assert s.bars[1].adj_close == pytest.approx(110.0)
+    assert s.bars[0].adj_close == pytest.approx(100.0)      # 前复权后与真实序列一致（自洽）
+
+
+def test_forward_adjust_reverses_exdiv_jump():
+    """核心回归：除权日价格跳空被还原——mom 不再被除权扭曲。
+
+    场景：股价 100 → 除息日跌到 90（pct_chg=0，持股者实际没亏），后涨到 99。
+    不复权 mom(2) = 99/100 - 1 = -1%；前复权 mom(2) = 99/90 - 1 = +10%。
+    """
+    rows = [
+        _bar(date(2025, 1, 1), 100.0, pct_chg=0.0),
+        _bar(date(2025, 1, 2), 90.0, pct_chg=0.0),    # 除息日：价跌 10% 但涨跌幅为 0
+        _bar(date(2025, 1, 3), 99.0, pct_chg=10.0),   # 真涨 10%
+    ]
+    s = _series("DIV.SH", rows)
+    raw_mom = s.closes[-1] / s.closes[0] - 1.0
+    adj_mom = mom(s.adj_closes, 2)
+    assert raw_mom == pytest.approx(-0.01)        # 不复权口径：被除权扭曲为 -1%
+    assert adj_mom == pytest.approx(0.10)         # 前复权口径：还原真实持股收益 +10%
+
+
+def test_forward_adjust_broken_chain_fail_closed():
+    """pct_chg 任何一行缺失 → adj_ok=False，compute_metrics 判不合格（双保险）。"""
+    rows = [
+        _bar(date(2025, 1, 1), 100.0, pct_chg=0.0),
+        _bar(date(2025, 1, 2), 110.0),            # 缺 pct_chg（旧版六列库行）
+        _bar(date(2025, 1, 3), 121.0, pct_chg=10.0),
+    ]
+    s = rows_to_series("BRK.SH", rows)
+    assert s.adj_ok is False
+    dec = compute_metrics(s, StrategyParams())
+    assert dec.has_history is False
+    assert any("前复权" in r for r in dec.filter_reasons)
+
+
+def test_forward_adjust_flat_day_is_valid():
+    """平盘日 pct_chg=0.0 是有效值（与缺失严格区分），不判断链。"""
+    rows = [_bar(date(2025, 1, 1) + timedelta(days=i), 100.0, pct_chg=0.0) for i in range(130)]
+    s = _series("FLAT.SH", rows)
+    assert s.adj_ok is True
+    assert s.adj_closes == pytest.approx([100.0] * 130)
+
+
+def test_forward_adjust_dirty_pct_fail_closed():
+    """pct_chg ≤ -100（脏数据）→ 链路不可信，fail-closed。"""
+    rows = [
+        _bar(date(2025, 1, 1), 100.0, pct_chg=0.0),
+        _bar(date(2025, 1, 2), 110.0, pct_chg=-100.0),   # 收益率 ≤ -100% 非法
+    ]
+    s = rows_to_series("DIRTY.SH", rows)
+    assert s.adj_ok is False
+
+
+def test_run_fail_closed_on_pct_gap(tmp_path, capsys):
+    """库内 pct_chg 缺列（旧版六列库）→ 主流程 fail-closed rc=1，提示先刷库回补。"""
+    watchlist = _write_watchlist(tmp_path, ["N1.SH"])
+    store = tmp_path / "store"
+    # 手写六列旧版库（无 pct_chg 列）
+    fp = store / "N1.SH.csv"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    with fp.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["trade_date", "open", "high", "low", "close", "vol"])
+        for i in range(130):
+            w.writerow([(date.today() - timedelta(days=129 - i)).strftime("%Y%m%d"),
+                        100, 100, 100, 100 + i * 0.2, 100])
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(tmp_path / "state.json"),
+                 "--store", str(store), "--out-dir", str(tmp_path / "out")])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "pct_chg" in out and "fail-closed" in out
+    assert "fetch_quotes.py" in out
+
+
+def test_e2e_exdiv_stock_not_killed_by_trend_gate(tmp_path):
+    """端到端核心回归：高送转/大额除息导致的破位假象不再误杀（趋势关）。
+
+    场景：长期温和上涨途中 10 转 10（价格对半），不复权口径下现价远低于 MA120
+    会被趋势关错杀；前复权口径还原后趋势完好、正常入选。
+    """
+    codes = ["SPLIT.SH", "N1.SH"]
+    watchlist = _write_watchlist(tmp_path, codes)
+    store = tmp_path / "store"
+    today = date.today()
+    # SPLIT.SH：124 根 100→149 温和上涨，第 125 天 10转10 对半到 75（pct_chg=0），
+    # 再 5 根 75→76 温和走势。不复权：close=76 < MA120(≈130) 趋势关杀；前复权：完好。
+    rows = []
+    for i in range(124):
+        rows.append(_bar(today - timedelta(days=129 - i), 100.0 + i * 0.4))
+    rows.append(_bar(today - timedelta(days=5), 75.0, pct_chg=0.0))   # 拆股日：真实涨跌幅 0
+    for i in range(5):
+        rows.append(_bar(today - timedelta(days=4 - i), 75.0 + (i + 1) * 0.2,
+                         pct_chg=0.266))  # 拆股后温和续涨
+    _write_store(store, {"SPLIT.SH": _fill_pct(rows)})
+    # N1.SH：普通温和上涨对照股
+    _write_store(store, {"N1.SH": _fill_pct(
+        [_bar(today - timedelta(days=(129 - i)), 100.0 + i * 0.2) for i in range(130)])})
+    state = tmp_path / "state.json"
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(state),
+                 "--store", str(store), "--out-dir", str(tmp_path / "out")])
+    assert rc == 0
+    st = json.loads(state.read_text(encoding="utf-8"))
+    assert "SPLIT.SH" in st["target"]    # 拆股股不再被趋势关错杀
+    assert "N1.SH" in st["target"]
