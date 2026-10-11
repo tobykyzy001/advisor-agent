@@ -49,9 +49,9 @@ fetch_quotes.py 对照行情库增量拉数并幂等写回（行情只走「API 
 → w_bottom_screen.py 直接读库判形态 → 出报告
 ```
 
-> 两个脚本都是**自包含单文件**（纯标准库、零 quantify 依赖），随插件包 `src/` 分发、由宿主静态端点
-> `/plugins/advisor-agent/assets/workspace-init/<脚本名>` 提供下载；也可在 advisor-agent 仓库内直接
-> `python src/workspace-init/<脚本名>` 运行（等价于 `python -m quantify.cli w-bottom` 的转调路径）。
+> 两个脚本都是**自包含单文件**（纯标准库、零 quantify 依赖），随插件包 `src/` 分发、由投研工具面板
+> 在投递指令前预置到工作区 `scripts/`（经宿主 `/provision` 端点白名单直写）；也可在 advisor-agent
+> 仓库内直接 `python src/workspace-init/<脚本名>` 运行（等价于 `python -m quantify.cli w-bottom` 的转调路径）。
 
 ### 第 1 步：刷库（增量补到最新交易日）
 

@@ -24,7 +24,7 @@
 - 侧边栏「投研工具」入口点开，**按 schema 自动渲染表单**（文本框 / 下拉框）。
 - 用户点「运行」，面板把参数拼成一条指令，通过 `session.prompt` 提交给 **DSH agent** 执行。
 - 可**新开会话**投递（默认），也可**发到当前会话**（表单内临时切换）。
-- agent 收到后执行：普通 skill 匹配对应 skill 跑方法论；`feishen-trading-logic` 这类方法论资产型工具会先下载插件分发的 Markdown、再按文档执行；`workspace-init`/`w-bottom-screener` 这类自包含脚本型 skill 则按指令下载脚本、python 运行，结果回显在会话流里。
+- agent 收到后执行：普通 skill 匹配对应 skill 跑方法论；`feishen-trading-logic` 这类方法论资产型工具按面板预置到工作区的 Markdown 执行；`workspace-init`/`w-bottom-screener` 这类自包含脚本型 skill 直接 python 运行面板已预置到 scripts/ 的脚本，结果回显在会话流里。
 
 **关键点：没有实现新的 agent** —— 执行者就是 DSH 自己的 agent，面板只是「表单 + 一次 prompt 转发」。
 
@@ -81,10 +81,10 @@ pnpm exec dsh plugin --profile web add advisor-agent
 2. （可选）在 `cordis.patch.yml` 的 `enabledSkills` 默认列表里补上该 id，让它默认启用。
 3. 决定该 skill 的**执行方式**，按资产来源三选一：
    - **普通 skill**：确保目标 agent 侧本身能识别该 skill 并执行（复用 `.agents/skills/<skill-id>/` 的方法论）。走 `buildInstruction` 的通用分支 `请调用 skill「…」`。
-   - **方法论资产型 skill**（如 `feishen-trading-logic`）：方法论文档随插件包分发，通过宿主静态端点 `makeAssetHandler` 伺服；在 `buildInstruction` 里要求目标会话先下载 Markdown 到当前工作区、再按文档执行，**不调用 skill**，因此可直接用于空白工程目录。
-   - **自包含脚本型 skill**（如 `workspace-init`、`w-bottom-screener`、`bili-video-summary`）：脚本随插件 `src/` 分发，通过宿主静态端点 `makeAssetHandler` 伺服；在 `buildInstruction` 里为它写**确定性指令分支**（下载脚本 → python 跑 → 汇报），不依赖目标工作区里存在 `.agents/skills` 或 quantify 包。其中 `workspace-init`/`w-bottom-screener`/`momentum-rotation` 是**纯标准库**脚本；`bili-video-summary` 依赖 `yt-dlp + faster-whisper`（联网下音频 + 离线转录），脚本内置依赖自检（`--selfcheck`）、模型缓存收拢到 `output/videos/models/`（`--models`）与幂等（已有文字稿跳过转录），非纯标准库但同样自包含分发、无需 skill。
+   - **方法论资产型 skill**（如 `feishen-trading-logic`）：方法论文档随插件包分发，面板投递指令前经宿主 `/provision` 端点预置到当前工作区 `scripts/<skill-id>/`；在 `buildInstruction` 里要求目标会话直接按预置文档执行，**不调用 skill**，因此可直接用于空白工程目录。
+   - **自包含脚本型 skill**（如 `workspace-init`、`w-bottom-screener`、`bili-video-summary`）：脚本随插件 `src/` 分发，面板投递指令前经宿主 `/provision` 端点预置到当前工作区 `scripts/`；在 `buildInstruction` 里为它写**确定性指令分支**（直接 python 跑已预置脚本 → 汇报），不依赖目标工作区里存在 `.agents/skills` 或 quantify 包，指令里不出现任何下载 URL。其中 `workspace-init`/`w-bottom-screener`/`momentum-rotation` 是**纯标准库**脚本；`bili-video-summary` 依赖 `yt-dlp + faster-whisper`（联网下音频 + 离线转录），脚本内置依赖自检（`--selfcheck`）、模型缓存收拢到 `output/videos/models/`（`--models`）与幂等（已有文字稿跳过转录），非纯标准库但同样自包含分发、无需 skill。
 
-> 注意：DSH 的 `/plugins/<id>/` 只伺服 `client.js` 一个 bundle，插件的其它静态文件**不会自动被伺服**——除了 `src/index.js` 里显式用 `makeAssetHandler` 注册的资产端点。技能注册表必须内联在 `lib/client.js`，不能走运行时 fetch；自包含脚本则要**同时**（a）放进 `src/` 随包分发、（b）在 `src/index.js` 注册静态端点、（c）在 `buildInstruction` 写下载+运行的确定性指令。增加/调整技能只是改这几处，渲染 / 校验 / 指令拼装全部自动跟进。
+> 注意：DSH 的 `/plugins/<id>/` 只伺服 `client.js` 一个 bundle，插件的其它静态文件**不会自动被伺服**。技能注册表必须内联在 `lib/client.js`，不能走运行时 fetch；自包含脚本则要**同时**（a）放进 `src/` 随包分发、（b）在 `src/index.js` 的 `/provision` 白名单登记目标相对路径、（c）在 `lib/client.js` 的 `provisionAssetsFor` 登记该技能所需资产、（d）在 `buildInstruction` 写直接运行的确定性指令。面板投递前经 `/plugins/advisor-agent/provision`（POST，本地回环 + 同源校验）把所需资产直接写进目标工作区——这是主分发通道，不依赖会话 shell 的网络权限（DSH NEXT 桌面原生外壳下会话 shell 拿不到插件静态端点：dsh-app:// 协议外部 shell 不支持、HTTP 又被宿主浏览器访问门禁拦截）；静态下载端点（`makeAssetHandler` 那批）保留，仅供可直连宿主 HTTP 服务的场景（纯 web 部署 / 手动调试）。增加/调整技能只是改这几处，渲染 / 校验 / 指令拼装全部自动跟进。
 
 ### 技术要点
 
@@ -101,8 +101,8 @@ pnpm exec dsh plugin --profile web add advisor-agent
 （仓库根）
 ├── package.json           # 插件 manifest：dsh.client（客户端依赖）+ dsh.bundle.patch
 ├── cordis.patch.yml       # 宿主侧 patch：注册插件行及其配置
-├── src/index.js           # 宿主侧入口（node）：配置 schema + 本地 /config 端点 + 静态脚本端点
-├── src/workspace-init/    # 自包含 Python 脚本（纯标准库，随包分发，经静态端点供 agent 下载）
+├── src/index.js           # 宿主侧入口（node）：配置 schema + /config 端点 + /provision 预置端点 + 静态资产端点
+├── src/workspace-init/    # 自包含 Python 脚本（纯标准库，随包分发，面板经 /provision 预置到工作区 scripts/）
 │   ├── init_workspace.py  #   工作区初始化脚手架
 │   └── w_bottom_screen.py #   W底放量筛选（--plan 列清单 / --data 判形态出报告）
 ├── .agents/skills/feishen-trading-logic/

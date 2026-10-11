@@ -1,8 +1,8 @@
 """行情取数 CLI：自包含单文件脚本（纯标准库，直连 tushare pro REST API）。
 
-这是全工作区**统一的行情取数入口**，随插件包分发，由宿主静态端点
-`/plugins/advisor-agent/assets/workspace-init/fetch_quotes.py` 提供给目标工作区里的
-agent 下载执行（与 w_bottom_screen.py / momentum_strategy.py 同一分发模式）。
+这是全工作区**统一的行情取数入口**，随插件包分发，投研工具面板在投递指令前经宿主
+/provision 端点预置到目标工作区 scripts/ 供 agent 直接执行
+（与 w_bottom_screen.py / momentum_strategy.py 同一分发模式）。
 
 设计约束：
 - 纯标准库（argparse / csv / json / os / re / time / urllib.request），零第三方依赖。

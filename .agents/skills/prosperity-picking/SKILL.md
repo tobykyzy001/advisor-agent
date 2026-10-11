@@ -97,7 +97,7 @@ python scripts/prosperity_state.py add ai-compute --name "AI算力" --reason "�
 - **subagent 提示词必须自包含**（它看不到当前会话）：板块信息（id / 名称 / 入选原因 / 最近复核结论，取自第 1 步状态输出）+ 任务内容 + fetch_quotes 命令行（含 token）+ 输出格式，并明确「只做这一个板块，不写观察仓、不改任何状态文件、只返回结构化结果不写文件」。
 - **任务内容**（各 subagent 相同，仅板块信息不同）：按相关标准（主营业务与板块景气直接挂钩、营收/利润对板块量价敏感、业务纯度高不蹭概念、行业地位与份额领先）联网研究该板块候选，选出**每板块 8–12 支（默认 10，用户可指定）**核心受益标的——**候选范围仅 A 股**（沪深主板/创业板/科创板/北交所，北交所标的可选；不选港股，其行情与一致预期取数链不全）——板块内按「纯度 + 龙头地位」排序取舍、合格候选不足定额时按实际数量如实说明、不硬凑；对候选跑 `python scripts/fetch_quotes.py --snapshot <代码,...>` 取行情，再逐只跑 `python scripts/fetch_forecast.py <代码> --mcap <总市值亿元>` 取同花顺机构一致预期（前瞻PE/PEG 的分母；总市值取快照值÷10000 换算成亿元）；先完整阅读 `scripts/stock-valuation/` 的 SKILL.md 与 data-source.md，再按景气口径逐只估值，**估值结论与机构一致预期方向相悖或差距显著时必须做差异分析**（预期透支/机构预测滞后/覆盖不足/年内进度不符/口径差异/独立判断，见 stock-valuation SKILL.md 的差异分析要点）并明确采信立场；返回结构化结果（每只：代码 / 名称 / 相关逻辑一句话 / 估值结论（口径+数值）/ 与机构一致预期的差异（无显著分歧或差距原因）/ 风险点，标注数据时点）。
 
-**估值硬约束（subagent 内执行）**：**候选与标的仅 A 股（沪深北，含北交所），不选港股**；**禁止用孤立静态 PE/PB 下「贵/便宜」结论**（周期股 PE 悖论：盈利顶点静态 PE 最低恰是风险，见 `docs/prosperity_investing.md` 第 4 节）；方法论以 `stock-valuation` 为准（生意属性→估值口径→横切维度→收敛）——面板场景先从宿主静态端点 `/plugins/advisor-agent/assets/stock-valuation/` 下载 SKILL.md 与 data-source.md 到 `scripts/stock-valuation/` 通读（不依赖工作区装有该技能），仓库内直接读 `.agents/skills/stock-valuation/`；口径：**前瞻/动态 PE + PEG + 周期中枢盈利（类 CAPE）+ 逆向 DCF 隐含增长率 + 相对估值分位**，叠加质量溢价与拥挤度/交易结构；输出前过一遍其「常见陷阱自检」清单；前瞻PE/PEG 的分母用 fetch_forecast.py 的净利润一致预期均值（结论注明覆盖机构数），取不到时**明确标注数据缺口与替代口径**，不编造；**自己的结论与机构一致预期相悖或差距显著时，必须分析差距原因并给采信立场**——不盲抄机构数字，也不无据否定。
+**估值硬约束（subagent 内执行）**：**候选与标的仅 A 股（沪深北，含北交所），不选港股**；**禁止用孤立静态 PE/PB 下「贵/便宜」结论**（周期股 PE 悖论：盈利顶点静态 PE 最低恰是风险，见 `docs/prosperity_investing.md` 第 4 节）；方法论以 `stock-valuation` 为准（生意属性→估值口径→横切维度→收敛）——面板场景该方法论文档已由投研工具预置到 `scripts/stock-valuation/`（SKILL.md 与 data-source.md，不依赖工作区装有该技能）直接通读，仓库内直接读 `.agents/skills/stock-valuation/`；口径：**前瞻/动态 PE + PEG + 周期中枢盈利（类 CAPE）+ 逆向 DCF 隐含增长率 + 相对估值分位**，叠加质量溢价与拥挤度/交易结构；输出前过一遍其「常见陷阱自检」清单；前瞻PE/PEG 的分母用 fetch_forecast.py 的净利润一致预期均值（结论注明覆盖机构数），取不到时**明确标注数据缺口与替代口径**，不编造；**自己的结论与机构一致预期相悖或差距显著时，必须分析差距原因并给采信立场**——不盲抄机构数字，也不无据否定。
 
 ### 第 3 步：汇总核查
 
@@ -126,7 +126,7 @@ output/prosperity/                    # 运行时数据（已 gitignore，不入
 └── report_<时间戳>.md                  #   每轮筛选/复核/选股的报告（agent 写，含证据时点）
 ```
 
-`prosperity_state.py` 经宿主静态端点 `/plugins/advisor-agent/assets/workspace-init/prosperity_state.py` 分发（面板场景下载到 `scripts/` 执行；仓库内直接 `python src/workspace-init/prosperity_state.py` 运行）；`stock-valuation` 的估值方法论文档（SKILL.md + references/data-source.md）经 `/plugins/advisor-agent/assets/stock-valuation/` 分发（pick 场景下载到 `scripts/stock-valuation/` 通读）；机构一致预期取数脚本 `src/workspace-init/fetch_forecast.py`（同花顺 F10 盈利预测页直连，纯标准库、无需 token）经 `/plugins/advisor-agent/assets/workspace-init/fetch_forecast.py` 分发，与 fetch_quotes.py 一同下载到 `scripts/`。观察仓写入一律委托 `watchlist-manager`（本技能对 `output/watchlist/` 零直接写）。
+`prosperity_state.py` 随插件包分发，面板场景由投研工具在投递指令前预置到 `scripts/`（经宿主 `/provision` 端点白名单直写）执行，仓库内直接 `python src/workspace-init/prosperity_state.py` 运行；`stock-valuation` 的估值方法论文档（SKILL.md + references/data-source.md）同样由面板预置到 `scripts/stock-valuation/`（pick 场景供各板块 subagent 通读，不依赖工作区装有该技能）；机构一致预期取数脚本 `src/workspace-init/fetch_forecast.py`（同花顺 F10 盈利预测页直连，纯标准库、无需 token）随面板预置到 `scripts/`，与 fetch_quotes.py 一同就位。观察仓写入一律委托 `watchlist-manager`（本技能对 `output/watchlist/` 零直接写）。
 
 ## 输出格式（报告与汇报共用）
 
@@ -163,7 +163,7 @@ output/prosperity/                    # 运行时数据（已 gitignore，不入
 ## 与其它技能的分工
 
 - 行业景气判断方法论（三层框架、景气适配估值口径）→ `prosperity-analysis`（本技能是其执行层，不重复展开）。
-- 个股估值方法论（生意属性→估值口径）→ `stock-valuation`（动作二第 2 步的板块 subagent 内直接复用其「景气成长/制造」分支，方法论文档经宿主静态端点分发、任意工作区可下载）。
+- 个股估值方法论（生意属性→估值口径）→ `stock-valuation`（动作二第 2 步的板块 subagent 内直接复用其「景气成长/制造」分支，方法论文档由面板预置到 `scripts/stock-valuation/`、任意工作区可用）。
 - 观察仓清单读写 → `watchlist-manager`（本技能委托 `add` + `set --PS/--PS_DATE`；踢标的时按 `PS=<板块id>` 筛选后逐个 `rm`）。
 - 当期景气行业快照（全市场分析）→ `prosperity-analysis` 写 `output/sectors/`；本技能的 `output/prosperity/state.yaml` 是**用户跟踪的板块子集**（含进出留痕），两者不互通。
 - 持仓（真金白银的仓位）→ `portfolio-tracker`（本技能产出的是观察仓候选，不是持仓建议）。

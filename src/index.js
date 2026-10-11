@@ -1,10 +1,17 @@
 // advisor-agent 宿主侧入口（node 侧）。
 //
-// 职责分两半：
+// 职责分三块：
 //  1. 注册可持久化的配置 schema（enable 总开关 / 每技能开关 / 默认目标会话），
 //     通过一个 /config 端点暴露给浏览器面板读写（参照官方 dsh-dafeiyu 的模式）。
-//  2. 前端所有 UI（侧边栏入口 + 技能表单 + 投递）都在 lib/client.js，
-//     本文件不做任何进程/端点外的重活，保持 payload 最小、可开源。
+//  2. 资产分发：把随包分发的脚本/方法论文档送进目标工作区。主通道是 /provision
+//     预置端点——面板在投递技能指令前，把所需资产直接写进目标工作区 scripts/，
+//     指令里不出现任何下载 URL，分发不依赖会话 shell 的网络权限（DSH NEXT 桌面
+//     原生外壳下，会话 shell 既不认识 dsh-app:// 协议、又被宿主「浏览器访问」门禁
+//     拦在 HTTP 端点之外，「让 agent 自己下载」恒不可达——2026-10 排查结论）。
+//     静态下载端点（makeAssetHandler 那批）保留，供可直连宿主 HTTP 服务的场景
+//     （纯 web 部署 / 手动调试）使用，面板流程不再依赖它们。
+//  3. 前端所有 UI（侧边栏入口 + 技能表单 + 投递）都在 lib/client.js，
+//     本文件不做任何端点外的重活，保持 payload 最小、可开源。
 //
 // 配置项：
 //   enabled        总开关：关闭后侧边栏不出现「投研工具」入口
@@ -16,7 +23,8 @@
 //                  / 工作区 .env。仅存于宿主设置，不入仓库。
 
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
@@ -24,8 +32,9 @@ const require = createRequire(import.meta.url)
 export const name = 'advisor-agent'
 export const inject = ['settings']
 export const CONFIG_ENDPOINT = '/plugins/advisor-agent/config'
-// workspace-init 脚本的静态下载端点：脚本随包分发（src/workspace-init/init_workspace.py 在 files 内），
-// 供目标工作区里的 agent 在运行时下载后执行。纯插件安装（无仓库 .agents/skills）也能拿到脚本。
+// workspace-init 脚本的静态下载端点（保留的辅助通道，供纯 web 部署/手动调试直连宿主
+// HTTP 服务时用；面板流程走 /provision 预置，桌面原生外壳下会话 shell 拿不到本端点）：
+// 脚本随包分发（src/workspace-init/init_workspace.py 在 files 内）。
 export const ASSET_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/init_workspace.py'
 const ASSET_PATH = fileURLToPath(new URL('./workspace-init/init_workspace.py', import.meta.url))
 // W底筛选自包含脚本的静态分发端点（与 workspace-init 同模式）：
@@ -98,7 +107,8 @@ const FEISHEN_ASSETS = [
 ]
 // 个股估值方法论（非脚本型文档资产）的静态分发端点：与 feishen-trading-logic 同模式——
 // 目标工作区可能是空目录（会话里没有 .agents/skills），prosperity-picking 的选股估值
-// 步骤下载这两份文档后按其框架执行，任意工作区都能拿到完整 stock-valuation 方法论。
+// 步骤按预置到 scripts/stock-valuation/ 的这两份文档执行，任意工作区都能拿到完整
+// stock-valuation 方法论。
 export const STOCK_VAL_SKILL_ENDPOINT = '/plugins/advisor-agent/assets/stock-valuation/SKILL.md'
 export const STOCK_VAL_DATA_ENDPOINT = '/plugins/advisor-agent/assets/stock-valuation/data-source.md'
 const STOCK_VAL_SKILL_PATH = fileURLToPath(new URL('../.agents/skills/stock-valuation/SKILL.md', import.meta.url))
@@ -107,6 +117,30 @@ const STOCK_VAL_ASSETS = [
   [STOCK_VAL_SKILL_ENDPOINT, STOCK_VAL_SKILL_PATH, 'stock-valuation/SKILL.md'],
   [STOCK_VAL_DATA_ENDPOINT, STOCK_VAL_DATA_PATH, 'stock-valuation/data-source.md'],
 ]
+
+// ── /provision 预置资产白名单 ─────────────────────────────────────────────────
+// 键 = 目标工作区内的相对路径（POSIX 风格），值 = 随包分发的源文件绝对路径。
+// 端点只接受白名单键：不接受任意路径，目标永远落在目标工作区 scripts/ 树内
+// （feishen 方法论与 stock-valuation 方法论各自收拢到 scripts/ 下同名子目录，
+// 与技能指令中的引用路径一致）。
+export const PROVISION_ENDPOINT = '/plugins/advisor-agent/provision'
+const PROVISION_ASSETS = new Map([
+  ['scripts/init_workspace.py', ASSET_PATH],
+  ['scripts/setup_runtime.py', SETUP_RUNTIME_PATH],
+  ['scripts/fetch_quotes.py', FETCH_QUOTES_PATH],
+  ['scripts/fetch_forecast.py', FETCH_FORECAST_PATH],
+  ['scripts/report_reader.py', REPORT_READER_PATH],
+  ['scripts/w_bottom_screen.py', WB_SCREEN_PATH],
+  ['scripts/momentum_strategy.py', MOMENTUM_PATH],
+  ['scripts/transcribe_video.py', TRANSCRIBE_PATH],
+  ['scripts/manage_watchlist.py', WATCHLIST_PATH],
+  ['scripts/prosperity_state.py', PROSPERITY_STATE_PATH],
+  ['scripts/feishen-trading-logic/SKILL.md', FEISHEN_SKILL_PATH],
+  ['scripts/feishen-trading-logic/feishen-rulebook.md', FEISHEN_RULEBOOK_PATH],
+  ['scripts/feishen-trading-logic/feishen-aliases.md', FEISHEN_ALIASES_PATH],
+  ['scripts/stock-valuation/SKILL.md', STOCK_VAL_SKILL_PATH],
+  ['scripts/stock-valuation/data-source.md', STOCK_VAL_DATA_PATH],
+])
 
 let Schema = null
 try {
@@ -183,7 +217,8 @@ function isLoopback(address) {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
 }
 
-async function readPatch(req) {
+// 读请求体并按 JSON 解析（/config PATCH 与 /provision POST 共用，均限 8KB）。
+async function readJsonBody(req) {
   const chunks = []
   let bytes = 0
   for await (const chunk of req) {
@@ -191,7 +226,11 @@ async function readPatch(req) {
     if (bytes > 8192) throw new Error('request body is too large')
     chunks.push(chunk)
   }
-  const value = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
+
+async function readPatch(req) {
+  const value = await readJsonBody(req)
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('patch must be an object')
   }
@@ -262,6 +301,106 @@ function makeAssetHandler(filePath, label, contentType = 'text/x-python; charset
       'content-length': Buffer.byteLength(cached),
     })
     res.end(cached)
+  }
+}
+
+// ── /provision 预置端点 ───────────────────────────────────────────────────────
+// 面板投递技能指令前调用：把所需资产按白名单直接写进目标工作区 scripts/。
+// 与 /config 同信任级（仅回环 + 同源），但只接受 POST，且只写白名单内的
+// 相对路径——不接受任意路径、不越出目标工作区（relative 防御纵深校验）。
+// 源文件按请求时读取（不缓存）：插件目录经符号链接直连本仓库，脚本更新后
+// 无需重启宿主即可预置到最新版。按字节原样写入（Buffer 读写），不经编码往返。
+
+function parseProvisionRequest(body) {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new Error('provision body must be an object')
+  }
+  const { workspaceRoot, assets } = body
+  if (typeof workspaceRoot !== 'string' || !workspaceRoot.trim()) {
+    throw new Error('workspaceRoot is required')
+  }
+  if (!isAbsolute(workspaceRoot)) {
+    throw new Error('workspaceRoot must be an absolute path')
+  }
+  if (!Array.isArray(assets) || assets.length === 0) {
+    throw new Error('assets must be a non-empty array')
+  }
+  if (assets.length > PROVISION_ASSETS.size) {
+    throw new Error('too many assets')
+  }
+  for (const key of assets) {
+    if (typeof key !== 'string' || !PROVISION_ASSETS.has(key)) {
+      throw new Error(`unknown asset: ${key}`)
+    }
+  }
+  return { workspaceRoot: workspaceRoot.trim(), assets: [...new Set(assets)] }
+}
+
+export function createProvisionHandler(logger = console) {
+  return async (req, res) => {
+    if (!isLoopback(req.socket?.remoteAddress)) {
+      jsonResponse(res, 403, { error: 'local access only' })
+      return
+    }
+    const origin = req.headers?.origin
+    if (origin) {
+      let originHost
+      try { originHost = new URL(origin).host } catch {}
+      if (!originHost || originHost !== req.headers.host) {
+        jsonResponse(res, 403, { error: 'origin mismatch' })
+        return
+      }
+    }
+    if (req.method !== 'POST') {
+      jsonResponse(res, 405, { error: 'method not allowed' })
+      return
+    }
+    let root
+    try {
+      const { workspaceRoot, assets } = parseProvisionRequest(await readJsonBody(req))
+      try {
+        root = realpathSync(workspaceRoot)
+      } catch (e) {
+        jsonResponse(res, 400, { error: `workspaceRoot not accessible: ${workspaceRoot}` })
+        return
+      }
+      if (!statSync(root).isDirectory()) {
+        jsonResponse(res, 400, { error: `workspaceRoot is not a directory: ${workspaceRoot}` })
+        return
+      }
+      const written = []
+      for (const key of assets) {
+        const src = PROVISION_ASSETS.get(key)
+        const dest = join(root, key)
+        // 防御纵深：白名单键本身不含 ..，这里再校验一次解析结果不越出工作区根。
+        const rel = relative(root, dest)
+        if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+          jsonResponse(res, 400, { error: `asset path escapes workspace: ${key}` })
+          return
+        }
+        let content
+        try {
+          content = readFileSync(src)
+        } catch (e) {
+          logger.error?.(`advisor-agent: provision source missing: ${key} -> ${src}`)
+          jsonResponse(res, 500, { error: `asset source not found: ${key}` })
+          return
+        }
+        try {
+          mkdirSync(dirname(dest), { recursive: true })
+          writeFileSync(dest, content)
+        } catch (e) {
+          logger.error?.(`advisor-agent: provision write failed: ${dest}: ${e instanceof Error ? e.message : e}`)
+          jsonResponse(res, 500, { error: `write failed: ${key}` })
+          return
+        }
+        written.push(key)
+      }
+      jsonResponse(res, 200, { written, workspaceRoot: root })
+    } catch (error) {
+      // 请求体过大 / JSON 不合法 / 字段校验失败 → 400（与 /config PATCH 同口径）。
+      jsonResponse(res, 400, { error: error instanceof Error ? error.message : String(error) })
+    }
   }
 }
 
@@ -400,6 +539,15 @@ function mount(ctx, config = {}) {
           `advisor-agent: ${label} asset endpoint`,
         )
       }
+      // 预置端点：面板投递指令前把所需资产直接写进目标工作区 scripts/（主分发通道）。
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: PROVISION_ENDPOINT,
+          handler: createProvisionHandler(logger),
+        }),
+        'advisor-agent: provision endpoint',
+      )
     })
   } else {
     logger.warn?.('advisor-agent: no ctx.inject, config endpoint not mounted')

@@ -95,7 +95,7 @@ description: 中期动量轮动选股技能。当用户要求「给观察股票�
 ## 总流程（两步：fetch_quotes.py 刷库 → 直接读库计算，面板与直连同构）
 
 > 脚本 `momentum_strategy.py` 自包含单文件（纯标准库、零 quantify 依赖），随插件包 `src/` 分发、
-> 由宿主静态端点 `/plugins/advisor-agent/assets/workspace-init/momentum_strategy.py` 提供下载。
+> 由投研工具面板在投递指令前预置到工作区 `scripts/`（经宿主 `/provision` 端点白名单直写）。
 
 ### 执行步骤
 
@@ -118,7 +118,7 @@ python scripts/momentum_strategy.py \
 - **标准输出只打印摘要**（大盘状态、目标持仓表等决策信息）：「逐只动量与过滤」全池明细**不进会话**——转达时仅提示报告 md 文件位置，勿整表复述（观察池几十上百只时逐只长表是纯 token 损耗）；用户要看逐只明细时让其直接打开该 md 文件。
 - 回写持仓状态 `output/momentum/state.json`（含 as_of / cash_pct / signal / target / positions），供下一轮「老仓优先」使用。
 - `--plan` 仅作诊断：打印每只的库内根数/最后交易日/待补区间，不取数。
-- 无面板直连时脚本就在仓库内 `src/workspace-init/`（面板场景则从端点下载到 `scripts/`，两条路径命令其余部分完全一致）。
+- 无面板直连时脚本就在仓库内 `src/workspace-init/`（面板场景则已由面板预置到 `scripts/`，两条路径命令其余部分完全一致）。
 
 ### 批量维护观察仓（可选指引）
 

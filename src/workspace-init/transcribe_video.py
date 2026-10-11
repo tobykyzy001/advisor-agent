@@ -1,9 +1,8 @@
 """B站视频下载音频并转录为文字稿的**自包含单文件工具脚本**。
 
-这是「B站视频总结」的唯一可执行真源，随插件包分发，由宿主静态端点
-`/plugins/advisor-agent/assets/workspace-init/transcribe_video.py` 提供给目标
-工作区里的 agent 下载执行（与 workspace-init/init_workspace.py、w-bottom-screener
-同一分发模式）。**不依赖 `.agents/skills`**，目标工作区无需任何 skill 文件。
+这是「B站视频总结」的唯一可执行真源，随插件包分发，投研工具面板在投递指令前经宿主
+/provision 端点预置到目标工作区 scripts/ 供 agent 直接执行（与 init_workspace.py、
+w_bottom_screen.py 同一分发模式）。**不依赖 `.agents/skills`**，目标工作区无需任何 skill 文件。
 
 用法：
     python transcribe_video.py "<B站视频URL/BV号/b23短链>" [--model small] [--force] \

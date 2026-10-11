@@ -10,15 +10,15 @@ description: 单一个股估值分析方法论。当用户要求对某一只具�
 ## 何时触发
 - 用户问「东山精密怎么估值」「滨江集团值多少」「XX 股现在贵不贵/便宜吗/目标价多少」「帮我分析/估值某一只股票」。
 - 投顾/选股场景需要对单个标的给出「贵/便宜 + 安全边际 + 何时重估」的结论。
-- 投研流程内委托调用：`prosperity-picking` 选出景气标的后，按本技能「景气成长/制造」口径（前瞻PE+PEG+周期中枢+逆向DCF+估值分位）逐只估值——前瞻PE/PEG 的分母用 `fetch_forecast.py` 取同花顺机构一致预期（见第 1 步），景气投资禁用孤立静态 PE/PB 下结论（本 SKILL.md 与 `references/data-source.md` 经宿主静态端点 `/plugins/advisor-agent/assets/stock-valuation/` 分发，目标工作区无需装有本技能）。
+- 投研流程内委托调用：`prosperity-picking` 选出景气标的后，按本技能「景气成长/制造」口径（前瞻PE+PEG+周期中枢+逆向DCF+估值分位）逐只估值——前瞻PE/PEG 的分母用 `fetch_forecast.py` 取同花顺机构一致预期（见第 1 步），景气投资禁用孤立静态 PE/PB 下结论（本 SKILL.md 与 `references/data-source.md` 由投研工具面板预置到 `scripts/stock-valuation/`，目标工作区无需装有本技能）。
 - 与 `prosperity-analysis` 区分：那是**行业级**配置方向；本技能是**个股级**估值落地。
 
 ## 总流程
 **取实时估值字段 → 识别生意属性 → 选估值口径 → 交叉收敛 → 给方向性结论 + 关键节点**。整套核心是两步「分类」，其余是执行。
 
 ### 第 1 步：取实时估值字段（数据获取）
-- **首选 fetch_quotes.py 快照**：`python scripts/fetch_quotes.py --snapshot <代码>` 一次取最新收盘/换手/PE两口径/PB/市值/股息率（脚本自包含纯标准库，token 用环境变量 TUSHARE_TOKEN 或工作区 .env；工作区没有该脚本时从插件端点 `/plugins/advisor-agent/assets/workspace-init/fetch_quotes.py` 下载）。字段映射、`ts_code` 后缀规则、口径局限(无前瞻PE、港股缺估值字段)见 `references/data-source.md`。
-- **机构一致预期（前瞻口径的分母）**：`python scripts/fetch_forecast.py <代码>`（可逗号分隔多只；`--mcap <总市值亿元>` 顺带输出各预测年前瞻PE）——直连同花顺 F10「盈利预测」页，解析净利润/EPS 一致预期年度汇总（机构数/最小/均值/最大/行业平均）、机构预测明细（含报告日期，判新鲜度与分歧度）、详细指标历史实际值（营收/净利/增速/ROE/每股净资产/静态PE，供质量溢价与周期中枢参考）；纯标准库、无需 token，工作区没有该脚本时从插件端点 `/plugins/advisor-agent/assets/workspace-init/fetch_forecast.py` 下载。仅 A 股（港股无此页）；无机构覆盖或取数失败时如实标注数据缺口，不编造。
+- **首选 fetch_quotes.py 快照**：`python scripts/fetch_quotes.py --snapshot <代码>` 一次取最新收盘/换手/PE两口径/PB/市值/股息率（脚本自包含纯标准库，token 用环境变量 TUSHARE_TOKEN 或工作区 .env；投研工具流程中该脚本已由面板预置到工作区 `scripts/`）。字段映射、`ts_code` 后缀规则、口径局限(无前瞻PE、港股缺估值字段)见 `references/data-source.md`。
+- **机构一致预期（前瞻口径的分母）**：`python scripts/fetch_forecast.py <代码>`（可逗号分隔多只；`--mcap <总市值亿元>` 顺带输出各预测年前瞻PE）——直连同花顺 F10「盈利预测」页，解析净利润/EPS 一致预期年度汇总（机构数/最小/均值/最大/行业平均）、机构预测明细（含报告日期，判新鲜度与分歧度）、详细指标历史实际值（营收/净利/增速/ROE/每股净资产/静态PE，供质量溢价与周期中枢参考）；纯标准库、无需 token，投研工具流程中已由面板预置到工作区 `scripts/`。仅 A 股（港股无此页）；无机构覆盖或取数失败时如实标注数据缺口，不编造。
 - **fetch_quotes 不可用/失败时**：退回 `scripts/fetch_snapshot.py <代码>` 拉取最新价、PB、PE 三口径(静态/TTM/动态)、总市值/流通市值、营收与净利同比、换手率、涨跌幅（腾讯/东财双源）。
 - 脚本用 `curl` 直连（Git Bash 下 curl **不读 Windows 系统代理**，能绕过本机被墙/损坏的代理）腾讯 `qt.gtimg.cn` 与东财 `push2.eastmoney.com` 公开接口，双源交叉核对。
 - **若 akshare/CLI 报 `ProxyError` 回退到 `LocalProvider` 示例数据，不要用示例数据凑数**——改用本脚本或 curl 直连（详见 `references/data-source.md`）。

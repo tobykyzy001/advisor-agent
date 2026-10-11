@@ -1,8 +1,8 @@
-"""研报阅读器（report_reader）：自包含单文件脚本（纯标准库，可下载即跑）。
+"""研报阅读器（report_reader）：自包含单文件脚本（纯标准库，就位即跑）。
 
-这是「读研报」工具的**唯一可执行真源**，随插件包分发，由宿主静态端点
-`/plugins/advisor-agent/assets/workspace-init/report_reader.py` 提供给目标工作区里的 agent
-下载执行（与 w_bottom_screen.py / fetch_forecast.py 同一分发模式）。
+这是「读研报」工具的**唯一可执行真源**，随插件包分发，投研工具面板在投递指令前经
+宿主 /provision 端点预置到目标工作区 scripts/ 供 agent 直接执行
+（与 w_bottom_screen.py / fetch_forecast.py 同一分发模式）。
 
 它解决什么
 ----------

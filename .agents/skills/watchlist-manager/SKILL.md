@@ -1,6 +1,6 @@
 ---
 name: watchlist-manager
-description: 观察仓清单管理技能。当用户要「把某只票加入观察仓/移出观察仓」「看看我的观察仓里都有谁」「在观察仓里搜一下某某」「维护观察标的池」时触发；也是投研流程的复用接口——stock-valuation 估值后想持续跟踪、copy-trade 挖到值得盯的标的时，由 agent 调本技能的脚本写入。核心：在 output/watchlist/watchlist.yaml（已忽略不入库，w-bottom-screener / momentum-rotation 共用的标的池）上做增删改查——add 代码自动规范化（600519→600519.SH）且幂等，set 支持任意 --param 透传（其他工具写死自己的英文键委托写入，如 w-bottom 的 --BS B、momentum 的 --MR 3），list 支持关键字搜索与 --where param 筛选（如按 PS=<板块id> 精确筛出某景气板块全部标的），写入口唯一。脚本真源 src/workspace-init/manage_watchlist.py 自包含纯标准库、随插件包分发并由宿主静态端点提供下载执行；投研工具面板有表单入口（动作 add/list/set/rm/check + 代码/名称/备注/param 透传 + list 搜索），对话式或投研流程内亦可触发。
+description: 观察仓清单管理技能。当用户要「把某只票加入观察仓/移出观察仓」「看看我的观察仓里都有谁」「在观察仓里搜一下某某」「维护观察标的池」时触发；也是投研流程的复用接口——stock-valuation 估值后想持续跟踪、copy-trade 挖到值得盯的标的时，由 agent 调本技能的脚本写入。核心：在 output/watchlist/watchlist.yaml（已忽略不入库，w-bottom-screener / momentum-rotation 共用的标的池）上做增删改查——add 代码自动规范化（600519→600519.SH）且幂等，set 支持任意 --param 透传（其他工具写死自己的英文键委托写入，如 w-bottom 的 --BS B、momentum 的 --MR 3），list 支持关键字搜索与 --where param 筛选（如按 PS=<板块id> 精确筛出某景气板块全部标的），写入口唯一。脚本真源 src/workspace-init/manage_watchlist.py 自包含纯标准库、随插件包分发，面板场景由投研工具预置到工作区 scripts/ 执行；投研工具面板有表单入口（动作 add/list/set/rm/check + 代码/名称/备注/param 透传 + list 搜索），对话式或投研流程内亦可触发。
 ---
 
 # 观察仓管理（Watchlist Manager）
@@ -39,7 +39,7 @@ description: 观察仓清单管理技能。当用户要「把某只票加入观�
 
 ## 使用
 
-脚本 `manage_watchlist.py` 是**自包含单文件**（纯标准库、零 quantify 依赖），随插件包 `src/` 分发、由宿主静态端点 `/plugins/advisor-agent/assets/workspace-init/manage_watchlist.py` 提供下载；也可在 advisor-agent 仓库内直接 `python src/workspace-init/manage_watchlist.py` 运行。**插件安装环境下**（无本仓库源码）：agent 先从该端点 URL 下载脚本到工作区，再 `python manage_watchlist.py <子命令>` 执行。
+脚本 `manage_watchlist.py` 是**自包含单文件**（纯标准库、零 quantify 依赖），随插件包 `src/` 分发，由投研工具面板在投递指令前预置到工作区 `scripts/`（经宿主 `/provision` 端点白名单直写）；也可在 advisor-agent 仓库内直接 `python src/workspace-init/manage_watchlist.py` 运行。**插件安装环境下**（无本仓库源码）：脚本已在 `scripts/` 就位，直接 `python scripts/manage_watchlist.py <子命令>` 执行。
 
 > 全局参数 `--watchlist`（清单路径，默认 `output/watchlist/watchlist.yaml`）与 `--now`（指定当前日期，测试用）**须放在子命令之前**。
 

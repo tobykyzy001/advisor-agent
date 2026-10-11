@@ -39,8 +39,8 @@ description: 研报阅读技能。当用户发来一份卖方研报（本地文�
 
 ### 第 1 步：取正文 + 抽主张（脚本，不经过 LLM 手抄）
 
-脚本真源 `src/workspace-init/report_reader.py`（纯标准库、自包含），经宿主静态端点
-`/plugins/advisor-agent/assets/workspace-init/report_reader.py` 分发，下载到工作区 `scripts/` 后运行：
+脚本真源 `src/workspace-init/report_reader.py`（纯标准库、自包含），随插件包分发、由投研工具面板
+在投递指令前预置到工作区 `scripts/`（经宿主 `/provision` 端点白名单直写），直接运行：
 
 ```bash
 # 入口一个参数：本地文件（.txt/.md/.html）或 http(s) 链接；PDF 需先转文本

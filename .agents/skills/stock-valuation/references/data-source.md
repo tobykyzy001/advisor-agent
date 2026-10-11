@@ -2,7 +2,7 @@
 
 ## 首选数据源：fetch_quotes.py 快照（直连 tushare REST）
 
-用 `python scripts/fetch_quotes.py --snapshot <代码>` 取数（脚本自包含纯标准库、绕过系统代理、字段稳定；工作区没有该脚本时从插件端点 `/plugins/advisor-agent/assets/workspace-init/fetch_quotes.py` 下载）。其字段来自 tushare pro REST API：`daily`（日线）+ `daily_basic`（每日估值指标），快照输出最新收盘/涨跌幅/换手/PE(TTM)/PE(静)/PB/总市值/流通市值/股息率(TTM)，并顺手增量写回本地行情库 `output/quotes-store/`；港股走 `hk_daily`（仅价量）。token 优先级：`--token` 参数 > 环境变量 `TUSHARE_TOKEN` > 工作区 `.env` 写 `TUSHARE_TOKEN=…`。
+用 `python scripts/fetch_quotes.py --snapshot <代码>` 取数（脚本自包含纯标准库、绕过系统代理、字段稳定；投研工具流程中该脚本已由面板预置到工作区 `scripts/`）。其字段来自 tushare pro REST API：`daily`（日线）+ `daily_basic`（每日估值指标），快照输出最新收盘/涨跌幅/换手/PE(TTM)/PE(静)/PB/总市值/流通市值/股息率(TTM)，并顺手增量写回本地行情库 `output/quotes-store/`；港股走 `hk_daily`（仅价量）。token 优先级：`--token` 参数 > 环境变量 `TUSHARE_TOKEN` > 工作区 `.env` 写 `TUSHARE_TOKEN=…`。
 
 - `ts_code` 格式（非 6 位数字）：沪市 `600519.SH` / 深市 `000333.SZ`（创业板 `300xxx.SZ`）/ 科创板 `688xxx.SH` / 北交所 `8xxxxx.BJ` 与 `920xxx.BJ`（920 号段）/ 港股 `00700.HK`。6 位代码需按交易所补后缀。
 
@@ -34,7 +34,7 @@
 
 ## 机构一致预期：fetch_forecast.py（同花顺 F10 盈利预测页）
 
-前瞻PE/PEG 的分母（机构预测净利润/EPS 均值）tushare 没有，用 `python scripts/fetch_forecast.py <代码>` 取（脚本自包含纯标准库、绕过系统代理直连、**无需 token**、只读不写；工作区没有该脚本时从插件端点 `/plugins/advisor-agent/assets/workspace-init/fetch_forecast.py` 下载）。输出为小体量表格，可直接进上下文：
+前瞻PE/PEG 的分母（机构预测净利润/EPS 均值）tushare 没有，用 `python scripts/fetch_forecast.py <代码>` 取（脚本自包含纯标准库、绕过系统代理直连、**无需 token**、只读不写；投研工具流程中该脚本已由面板预置到工作区 `scripts/`）。输出为小体量表格，可直接进上下文：
 
 | 输出表 | 内容 | 估值用途 |
 |---|---|---|

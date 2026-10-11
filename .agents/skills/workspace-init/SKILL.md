@@ -68,9 +68,9 @@ python src/workspace-init/setup_runtime.py --target D:/my-advisor
 #    可选 --with-opencc（繁转简） / --check（只查不装） / --force（强制重装）
 ```
 
-**插件安装环境下**（无本仓库源码）：脚本由宿主静态端点分发，URL 为
-`http://127.0.0.1:<port>/plugins/advisor-agent/assets/workspace-init/init_workspace.py` 与
-`.../assets/workspace-init/setup_runtime.py`，agent 下载后执行即可；客户端投递的指令会带上该地址。
+**插件安装环境下**（无本仓库源码）：脚本由投研工具面板在投递指令前**预置**到目标工作区
+`scripts/`（经宿主 `/plugins/advisor-agent/provision` 端点，白名单直写、每次投递自动覆盖更新），
+agent 拿到的指令不含任何下载 URL、直接 `python scripts/<脚本名>` 执行即可。
 
 ## 幂等与安全
 

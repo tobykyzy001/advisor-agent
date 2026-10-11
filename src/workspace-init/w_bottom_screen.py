@@ -1,8 +1,8 @@
-"""W底放量筛选：自包含单文件脚本（纯标准库，可下载即跑，不依赖 quantify 包）。
+"""W底放量筛选：自包含单文件脚本（纯标准库，就位即跑，不依赖 quantify 包）。
 
-这是「观察仓 W底 + 放量」形态筛选的**唯一可执行真源**，随插件包分发，由宿主静态端点
-`/plugins/advisor-agent/assets/workspace-init/w_bottom_screen.py` 提供给目标工作区里的
-agent 下载执行（与 workspace-init/init_workspace.py 同一分发模式）。
+这是「观察仓 W底 + 放量」形态筛选的**唯一可执行真源**，随插件包分发，投研工具面板
+在投递指令前经宿主 /provision 端点预置到目标工作区 scripts/ 供 agent 直接执行
+（与 workspace-init/init_workspace.py 同一分发模式）。
 
 设计约束（与 init_workspace.py 一致）：
 - 纯标准库（dataclass / csv / argparse / datetime / pathlib / re），零第三方依赖。
