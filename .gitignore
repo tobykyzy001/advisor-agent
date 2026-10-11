@@ -45,3 +45,7 @@ node_modules/
 # ---- OS ----
 .DS_Store
 Thumbs.db
+
+# ---- 用户回测导出与包管理本地仓（个人/仓内生成，不入库） ----
+result_*.csv
+.pnpm-store/

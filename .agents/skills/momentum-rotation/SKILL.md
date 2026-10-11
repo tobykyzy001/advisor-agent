@@ -139,6 +139,7 @@ python scripts/momentum_strategy.py \
 - 自己持仓的持续跟踪 → `portfolio-tracker`（本技能产出的是策略组合，不是人工持仓清单）。
 - 技术形态买点 → `w-bottom-screener`（本技能与 W底筛选共用观察仓，但一个是形态触发器、一个是动量轮动）。
 - 往观察仓加/删标的、或轮动结果给条目留 param → `watchlist-manager`（本技能对清单只读，写入一律委托它：`set <code> --MR 3`）。
+- ETF 池的动量轮动 → `etf-rotation`（分工边界：本技能管**股票**（观察仓 watchlist）的中期动量轮动，周频、双动量（mom20/mom120）+ 三道关；etf-rotation 管 **ETF 池**（`output/etf-rotation/pool.yaml`）的动量轮动，日频、24 日加权回归斜率×R² + R²/近3日跌幅过滤、前 K 等权+1.5K 缓冲+货币ETF防御。两者共用 `fetch_quotes.py` 与 `output/quotes-store/`，引擎与池互不重叠）。
 
 ## 生成数据 vs 技能方法（提交边界）
 

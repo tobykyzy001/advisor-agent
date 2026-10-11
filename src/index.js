@@ -36,6 +36,15 @@ const WB_SCREEN_PATH = fileURLToPath(new URL('./workspace-init/w_bottom_screen.p
 // 纯标准库、零 quantify 依赖，目标工作区 agent 下载后直接 python 运行，一次性出目标组合。
 export const MOMENTUM_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/momentum_strategy.py'
 const MOMENTUM_PATH = fileURLToPath(new URL('./workspace-init/momentum_strategy.py', import.meta.url))
+// ETF 动量轮动自包含脚本的静态分发端点（与 momentum-rotation 同模式）：
+// 纯标准库、零 quantify 依赖，目标工作区 agent 下载后直接 python 运行，出前 K 等权目标组合。
+export const ETF_ROTATION_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/etf_rotation_strategy.py'
+const ETF_ROTATION_PATH = fileURLToPath(new URL('./workspace-init/etf_rotation_strategy.py', import.meta.url))
+// ETF 目录（etf-map.yaml）的静态分发端点：方法与运行分离——常驻层+行业主题菜单，
+// pool-build 时按 output/prosperity/state.yaml 在跟景气板块从目录映射生成当期池
+// output/etf-rotation/pool.yaml（见 etf-rotation 技能），目录本身可由 agent 在池复核时补录。
+export const ETF_MAP_ENDPOINT = '/plugins/advisor-agent/assets/etf-rotation/etf-map.yaml'
+const ETF_MAP_PATH = fileURLToPath(new URL('../.agents/skills/etf-rotation/references/etf-map.yaml', import.meta.url))
 // B站视频转录（自包含脚本）的静态分发端点：目标工作区 agent 下载后直接 python 运行，
 // 不依赖 .agents/skills。脚本真源 src/workspace-init/transcribe_video.py。
 export const TRANSCRIBE_ENDPOINT = '/plugins/advisor-agent/assets/workspace-init/transcribe_video.py'
@@ -107,7 +116,7 @@ try {
 }
 
 // 默认启用的技能固定来自 lib/client.js 内联注册表 ADVISOR_SKILLS 的 id 集合；若丢失，用最小兜底。
-export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'report-reading', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'momentum-rotation', 'bili-video-summary', 'feishen-trading-logic', 'prosperity-picking']
+export const DEFAULT_ENABLED_SKILLS = ['stock-valuation', 'report-reading', 'copy-trade', 'workspace-init', 'w-bottom-screener', 'momentum-rotation', 'etf-rotation', 'bili-video-summary', 'feishen-trading-logic', 'prosperity-picking']
 
 const defaults = Object.freeze({
   enabled: true,
@@ -298,6 +307,22 @@ function mount(ctx, config = {}) {
           handler: makeAssetHandler(MOMENTUM_PATH, 'workspace-init/momentum_strategy.py'),
         }),
         'advisor-agent: momentum-rotation asset endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: ETF_ROTATION_ENDPOINT,
+          handler: makeAssetHandler(ETF_ROTATION_PATH, 'workspace-init/etf_rotation_strategy.py'),
+        }),
+        'advisor-agent: etf-rotation asset endpoint',
+      )
+      httpCtx.effect(
+        () => httpCtx.webServer.register({
+          kind: 'exact',
+          path: ETF_MAP_ENDPOINT,
+          handler: makeAssetHandler(ETF_MAP_PATH, 'etf-rotation/etf-map.yaml', 'text/yaml; charset=utf-8'),
+        }),
+        'advisor-agent: etf-rotation map asset endpoint',
       )
       httpCtx.effect(
         () => httpCtx.webServer.register({

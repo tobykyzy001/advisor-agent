@@ -1,0 +1,266 @@
+# ETF 动量轮动 · ETF 目录（etf-map，随技能提交的方法资产）
+#
+# 用途：pool-build 动作时，由本目录**映射生成当期池** output/etf-rotation/pool.yaml：
+#   常驻层全收（layer: base）＋ 行业主题层按 output/prosperity/state.yaml 在跟板块
+#   逐板块选 1–2 只（sector 匹配菜单）＋ 扩展层仅在板块/主题明确指向时收编。
+# 维护纪律：
+#   - 本目录**可以也应该扩充**（新上市主流 ETF 由 agent 在池复核时补录到合适层，
+#     并标注上市日期）；它是"目录"不是"池"，不写死当期用哪只。
+#   - 上市日期（list 字段）供 agent 排除上市未满 45 交易日的品种（动量信号起不了量）。
+#   - note 含 QDII 的品种：入选后实盘需人工核溢价（>2% 暂缓）。
+#   - 常驻层的选取原则：跨资产、低相关、是轮动切换的骨头（A股宽基/美股/黄金/国债）；
+#     行业主题一律不放常驻层（行业同步性高，靠景气映射进场）。
+
+# ═══ 常驻层（layer: base；每次 pool-build 全收）═══
+# A股宽基（4）
+- ts_code: 159915.XSHE
+  name: 创业板ETF
+  layer: base
+  note: 宽基/成长
+- ts_code: 563300.XSHG
+  name: 中证2000ETF
+  layer: base
+  note: 宽基/小盘
+- ts_code: 563360.XSHG
+  name: 中证A500ETF
+  layer: base
+  note: 宽基/核心
+- ts_code: 588220.XSHG
+  name: 科创100ETF
+  layer: base
+  note: 宽基/成长
+# 美股/港股核心（3）
+- ts_code: 159941.XSHE
+  name: 纳指ETF
+  layer: base
+  note: 跨境/QDII
+- ts_code: 513500.XSHG
+  name: 标普500ETF
+  layer: base
+  note: 跨境/QDII
+- ts_code: 513130.XSHG
+  name: 恒生科技ETF
+  layer: base
+  note: 跨境/QDII
+# 商品核心（2）
+- ts_code: 518880.XSHG
+  name: 黄金ETF
+  layer: base
+  note: 商品/避险
+- ts_code: 159980.XSHE
+  name: 有色ETF
+  layer: base
+  note: 商品
+# 债券（1）
+- ts_code: 511090.XSHG
+  name: 30年国债ETF
+  layer: base
+  note: 债券/高久期（债牛期本身是进攻资产）
+# 海外发达市场补充（1）
+- ts_code: 513520.XSHG
+  name: 日经ETF
+  layer: base
+  note: 跨境/QDII
+
+# ═══ 行业主题层（layer: sector；按在跟景气板块 sector 匹配选 1–2 只）═══
+- ts_code: 159819.XSHE
+  name: 人工智能ETF
+  layer: sector
+  sector: 人工智能,AI,算力
+  note: 行业/科技
+- ts_code: 516510.XSHG
+  name: 云计算ETF
+  layer: sector
+  sector: 人工智能,AI,算力,云计算
+  note: 行业/科技
+- ts_code: 515050.XSHG
+  name: 5GETF
+  layer: sector
+  sector: 通信,5G,算力
+  note: 行业/科技
+- ts_code: 159995.XSHE
+  name: 芯片ETF
+  layer: sector
+  sector: 半导体,芯片
+  note: 行业/科技
+- ts_code: 515000.XSHG
+  name: 科技ETF
+  layer: sector
+  sector: 科技,电子
+  note: 行业/科技
+- ts_code: 562500.XSHG
+  name: 机器人ETF
+  layer: sector
+  sector: 机器人,智能制造
+  list: 2021
+  note: 行业/主题
+- ts_code: 515790.XSHG
+  name: 光伏ETF
+  layer: sector
+  sector: 光伏,新能源
+  note: 行业/制造
+- ts_code: 515030.XSHG
+  name: 新能源车ETF
+  layer: sector
+  sector: 新能源车,汽车,锂电
+  note: 行业/制造
+- ts_code: 516160.XSHG
+  name: 新能源ETF
+  layer: sector
+  sector: 新能源,储能,风光
+  note: 行业/制造
+- ts_code: 159755.XSHE
+  name: 电池ETF
+  layer: sector
+  sector: 电池,锂电,储能
+  note: 行业/制造
+- ts_code: 159992.XSHE
+  name: 创新药ETF
+  layer: sector
+  sector: 创新药,医药
+  note: 行业/医药
+- ts_code: 512170.XSHG
+  name: 医疗ETF
+  layer: sector
+  sector: 医疗,医药
+  note: 行业/医药
+- ts_code: 520500.XSHG
+  name: 恒生创新药ETF
+  layer: sector
+  sector: 创新药,医药,港股
+  list: 2025
+  note: 跨境/QDII（小众）
+- ts_code: 512710.XSHG
+  name: 军工ETF
+  layer: sector
+  sector: 军工,国防
+  note: 行业/军工
+- ts_code: 159378.XSHE
+  name: 通用航空ETF
+  layer: sector
+  sector: 军工,商业航天,低空经济
+  list: 2024
+  note: 行业/主题（小众）
+- ts_code: 159206.XSHE
+  name: 卫星ETF
+  layer: sector
+  sector: 商业航天,卫星,军工
+  list: 2024
+  note: 行业/主题（小众）
+- ts_code: 512880.XSHG
+  name: 证券ETF
+  layer: sector
+  sector: 证券,券商,金融
+  note: 行业/金融
+- ts_code: 159851.XSHE
+  name: 金融科技ETF
+  layer: sector
+  sector: 金融科技,金融,证券
+  note: 行业/金融
+- ts_code: 515220.XSHG
+  name: 煤炭ETF
+  layer: sector
+  sector: 煤炭,能源,周期
+  note: 行业/周期
+- ts_code: 515210.XSHG
+  name: 钢铁ETF
+  layer: sector
+  sector: 钢铁,周期,材料
+  note: 行业/周期
+- ts_code: 562800.XSHG
+  name: 稀有金属ETF
+  layer: sector
+  sector: 有色,稀有金属,资源,周期
+  note: 行业/上游
+- ts_code: 510410.XSHG
+  name: 资源ETF
+  layer: sector
+  sector: 资源,周期,上游
+  note: 行业/上游
+- ts_code: 159870.XSHE
+  name: 化工ETF
+  layer: sector
+  sector: 化工,周期
+  note: 行业/周期
+- ts_code: 159611.XSHE
+  name: 电力ETF
+  layer: sector
+  sector: 电力,公用事业
+  note: 行业/公用
+- ts_code: 159326.XSHE
+  name: 电网设备ETF
+  layer: sector
+  sector: 电网,电力设备,特高压
+  list: 2024
+  note: 行业/主题
+- ts_code: 159928.XSHE
+  name: 中证消费ETF
+  layer: sector
+  sector: 消费,食品饮料
+  note: 行业/消费
+# ═══ 扩展层（layer: extend；仅板块/主题明确指向时才收编，默认不进当期池）═══
+- ts_code: 159509.XSHE
+  name: 纳指科技ETF
+  layer: extend
+  sector: 美股,纳指,科技
+  list: 2023
+  note: 跨境/QDII
+- ts_code: 513030.XSHG
+  name: 德国ETF
+  layer: extend
+  sector: 欧洲,德国
+  note: 跨境/QDII
+- ts_code: 513080.XSHG
+  name: 法国ETF
+  layer: extend
+  sector: 欧洲,法国
+  note: 跨境/QDII
+- ts_code: 159100.XSHE
+  name: 巴西ETF
+  layer: extend
+  sector: 南美,巴西,资源
+  note: 跨境/QDII
+- ts_code: 159329.XSHE
+  name: 沙特ETF
+  layer: extend
+  sector: 中东,沙特,能源
+  list: 2024
+  note: 跨境/QDII（小众）
+- ts_code: 513970.XSHG
+  name: 消费ETF(港股)
+  layer: extend
+  sector: 港股,消费
+  note: 跨境/QDII
+- ts_code: 513690.XSHG
+  name: 港股红利ETF
+  layer: extend
+  sector: 港股,红利,高股息
+  note: 跨境/QDII
+- ts_code: 501018.XSHG
+  name: 南方原油LOF
+  layer: extend
+  sector: 原油,能源,OPEC
+  note: 跨境/QDII（长期折溢价大）
+- ts_code: 161226.XSHE
+  name: 白银ETF
+  layer: extend
+  sector: 贵金属,白银,黄金
+  note: 商品（小众，波动大）
+- ts_code: 159985.XSHE
+  name: 豆粕ETF
+  layer: extend
+  sector: 农业,豆粕,养殖
+  note: 商品（小众）
+- ts_code: 159981.XSHE
+  name: 能源化工ETF
+  layer: extend
+  sector: 能源,化工,OPEC
+  note: 商品（小众）
+
+# ═══ 下架休眠区（sunset；即使 sector 关键词匹配也一律不映射进当期池）═══
+# 规则：条目只移不删；原因与日期必录；政策刺激/困境反转站住后可经人工升回 sector 层。
+- ts_code: 512690.XSHG
+  name: 中证酒ETF
+  layer: sunset
+  sector: 白酒,消费,酒
+  note: 行业/消费｜下架：白酒为夕阳产业，结构性下行，不再作为动量轮动候选（用户拍板 2026-10-11）
