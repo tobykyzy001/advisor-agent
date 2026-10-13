@@ -105,17 +105,22 @@ const FEISHEN_ASSETS = [
   [FEISHEN_RULEBOOK_ENDPOINT, FEISHEN_RULEBOOK_PATH, 'feishen-trading-logic/feishen-rulebook.md'],
   [FEISHEN_ALIASES_ENDPOINT, FEISHEN_ALIASES_PATH, 'feishen-trading-logic/feishen-aliases.md'],
 ]
-// 个股估值方法论（非脚本型文档资产）的静态分发端点：与 feishen-trading-logic 同模式——
-// 目标工作区可能是空目录（会话里没有 .agents/skills），prosperity-picking 的选股估值
-// 步骤按预置到 scripts/stock-valuation/ 的这两份文档执行，任意工作区都能拿到完整
-// stock-valuation 方法论。
+// 个股估值资产的静态分发端点（保留的辅助通道，主通道为 /provision 预置）：
+// 与 feishen-trading-logic 同模式（工具类调用、不走 skill）——目标工作区可能是空目录
+// （会话里没有 .agents/skills），投研面板的「个股估值」工具与 prosperity-picking 的
+// 选股估值步骤按预置到 scripts/stock-valuation/ 的方法论文档执行，任意工作区都能拿到
+// 完整 stock-valuation 方法论；fetch_snapshot.py 是方法论中「fetch_quotes.py 不可用时
+// 退回」的纯标准库双源直连取数脚本，一并分发保证取数链完整。
 export const STOCK_VAL_SKILL_ENDPOINT = '/plugins/advisor-agent/assets/stock-valuation/SKILL.md'
 export const STOCK_VAL_DATA_ENDPOINT = '/plugins/advisor-agent/assets/stock-valuation/data-source.md'
+export const STOCK_VAL_SNAPSHOT_ENDPOINT = '/plugins/advisor-agent/assets/stock-valuation/fetch_snapshot.py'
 const STOCK_VAL_SKILL_PATH = fileURLToPath(new URL('../.agents/skills/stock-valuation/SKILL.md', import.meta.url))
 const STOCK_VAL_DATA_PATH = fileURLToPath(new URL('../.agents/skills/stock-valuation/references/data-source.md', import.meta.url))
+const STOCK_VAL_SNAPSHOT_PATH = fileURLToPath(new URL('../.agents/skills/stock-valuation/scripts/fetch_snapshot.py', import.meta.url))
 const STOCK_VAL_ASSETS = [
-  [STOCK_VAL_SKILL_ENDPOINT, STOCK_VAL_SKILL_PATH, 'stock-valuation/SKILL.md'],
-  [STOCK_VAL_DATA_ENDPOINT, STOCK_VAL_DATA_PATH, 'stock-valuation/data-source.md'],
+  [STOCK_VAL_SKILL_ENDPOINT, STOCK_VAL_SKILL_PATH, 'stock-valuation/SKILL.md', 'text/markdown; charset=utf-8'],
+  [STOCK_VAL_DATA_ENDPOINT, STOCK_VAL_DATA_PATH, 'stock-valuation/data-source.md', 'text/markdown; charset=utf-8'],
+  [STOCK_VAL_SNAPSHOT_ENDPOINT, STOCK_VAL_SNAPSHOT_PATH, 'stock-valuation/fetch_snapshot.py', 'text/x-python; charset=utf-8'],
 ]
 
 // ── /provision 预置资产白名单 ─────────────────────────────────────────────────
@@ -140,6 +145,7 @@ const PROVISION_ASSETS = new Map([
   ['scripts/feishen-trading-logic/feishen-aliases.md', FEISHEN_ALIASES_PATH],
   ['scripts/stock-valuation/SKILL.md', STOCK_VAL_SKILL_PATH],
   ['scripts/stock-valuation/data-source.md', STOCK_VAL_DATA_PATH],
+  ['scripts/fetch_snapshot.py', STOCK_VAL_SNAPSHOT_PATH],
 ])
 
 let Schema = null
@@ -529,12 +535,12 @@ function mount(ctx, config = {}) {
           `advisor-agent: ${label} asset endpoint`,
         )
       }
-      for (const [path, filePath, label] of STOCK_VAL_ASSETS) {
+      for (const [path, filePath, label, contentType] of STOCK_VAL_ASSETS) {
         httpCtx.effect(
           () => httpCtx.webServer.register({
             kind: 'exact',
             path,
-            handler: makeAssetHandler(filePath, label, 'text/markdown; charset=utf-8'),
+            handler: makeAssetHandler(filePath, label, contentType),
           }),
           `advisor-agent: ${label} asset endpoint`,
         )

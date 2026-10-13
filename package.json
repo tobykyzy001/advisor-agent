@@ -15,6 +15,7 @@
     "src/",
     ".agents/skills/feishen-trading-logic/",
     ".agents/skills/etf-rotation/",
+    ".agents/skills/stock-valuation/",
     "lib/client.js",
     "cordis.patch.yml",
     "README.md",
