@@ -23,7 +23,7 @@
 - 每个 skill 声明一份参数 schema（输入类型 / 默认值）。
 - 侧边栏「投研工具」入口点开，**按 schema 自动渲染表单**（文本框 / 下拉框）。
 - 用户点「运行」，面板把参数拼成一条指令，通过 `session.prompt` 提交给 **DSH agent** 执行。
-- 可**新开会话**投递（默认），也可**发到当前会话**（表单内临时切换）。
+- 可**新开会话**投递（默认，强制新建一个会话——不复用当前工作区里已有的空白会话），也可**发到当前会话**（表单内临时切换）。
 - agent 收到后执行：普通 skill 匹配对应 skill 跑方法论；`stock-valuation`/`feishen-trading-logic` 这类方法论资产型工具按面板预置到工作区的方法论文档执行（个股估值还连带预置 fetch_quotes.py / fetch_forecast.py / fetch_snapshot.py 三个取数脚本），不调用同名 skill；`workspace-init`/`w-bottom-screener` 这类自包含脚本型 skill 直接 python 运行面板已预置到 scripts/ 的脚本，结果回显在会话流里。
 
 **关键点：没有实现新的 agent** —— 执行者就是 DSH 自己的 agent，面板只是「表单 + 一次 prompt 转发」。
@@ -91,8 +91,9 @@ pnpm exec dsh plugin --profile web add advisor-agent
 - 客户端 bundle 用 `window.__ModuleLoader__.load({ id, factory })` 注册，返回 `{ name, inject, apply(ctx) }`。
 - 两个槽位：`sidebar.footer.action`（侧边栏入口）+ `settings.plugin.item`（设置卡片）。配置走宿主 `/plugins/advisor-agent/config` 端点（GET/PATCH，本地回环校验）。
 - 投递：
-  - 新开会话：`ctx.get('uiWorkspace').startSession()` 交给官方工作区组合层解析（当前工作区 → 最近 → 第一个）并打开新会话；再订阅 `sessions.list` 快照拿到新的 `current`，最后 `sessions.binding(id).session.prompt(...)`。`connectWorkspace` 是 `uiWorkspace` 服务的方法，纯 `workspaces` 控制器上不存在。
-  - 当前会话：`sessions.list.getSnapshot().current` → `sessions.binding(current).session.prompt(...)`。
+  - 新开会话（强制新建）：自己解析目标工作区 id（当前会话所属 → 最近 → 第一个，`resolveNewSessionWorkspaceId`）→ `sessions.create({ workspaceId })` 显式新建 → `uiWorkspace.openSession(id)` 把主视图切过去（内部 retain + 写 selection，新会话的 `binding` 才可用）→ `sessions.binding(id).session.prompt(...)`。
+    - **不能**走 `uiWorkspace.startSession()`：它内部是 `reuseOrCreateBlank`——同工作区已有空白会话就直接复用（侧边栏那行还没说过话的「新会话」就是空白会话），点了「新开会话」却看不到新会话、指令落进旧会话。宿主缺 `create`/`openSession` 时降级回 `startSession`（复用优先）。
+  - 当前会话：`uiWorkspace.selection`（回退 `sessions.list.getSnapshot().current`）→ `sessions.binding(id).session.prompt(...)`。
 - `ADVISOR_SKILLS` 是 schema 驱动的通用表单**单一数据源**；渲染、必填校验、`buildInstruction` 都由它驱动。
 
 ### 插件目录结构
