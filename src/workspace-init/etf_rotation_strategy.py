@@ -45,7 +45,9 @@ fail-closed（数据安全）：
 
 本地 CSV 行情库（与 momentum_strategy.py / w_bottom_screen.py 共用 output/quotes-store/）：
   每只标的一份 output/quotes-store/<ts_code>.csv，列
-  trade_date,open,high,low,close,vol,pct_chg（pct_chg 为前复权计算原料）。
+  trade_date,open,high,low,close,vol,pct_chg（pct_chg 为前复权计算原料）；
+  fetch_quotes.py 另写第 8 列 rt（--realtime 盘中临时K线标记，本脚本按列名
+  读取自动忽略，末根 rt=1 时报告会标注「近收盘价时点」）。
 
 两层式工作流（取数与计算分离）：
  1) python fetch_quotes.py --watchlist output/etf-rotation/pool.yaml --min-bars 45 --full-days 120
@@ -468,6 +470,20 @@ def read_store(store_dir: Path, ts_code: str) -> list[dict]:
     return sorted(rows, key=lambda r: r["trade_date"])
 
 
+def store_last_bar_rt(store_dir: Path, ts_code: str) -> bool:
+    """库内末根是否为 fetch_quotes --realtime 写入的盘中临时K线（rt=1）。
+
+    直接读 CSV 原始行（本脚本 CSV_FIELDS 不含 rt 列，DictReader 按文件表头
+    读取即可拿到 rt；旧版七列库无该列自然返回 False）。
+    """
+    fp = store_csv_path(store_dir, ts_code)
+    if not fp.exists():
+        return False
+    with fp.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    return bool(rows) and (rows[-1].get("rt") or "").strip() == "1"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 主流程（--plan 仅诊断 / 默认直接读库计算）
 # ═══════════════════════════════════════════════════════════════════════════
@@ -547,6 +563,14 @@ def _run(pool_path: Path, state_path: Path | None, p: StrategyParams,
               f" --min-bars {p.history_min} --full-days 120")
         return 1
 
+    # 盘中临时K线感知：fetch_quotes --realtime 写入的 rt=1 末根 → 信号基于近收盘价
+    # 时点而非正式收盘价，标准输出与报告都如实标注（收盘后刷库自动覆盖为正式K线）
+    rt_codes = [c for c in sorted(raw) if store_last_bar_rt(store_dir, c)]
+    if rt_codes:
+        print(f"[notice] {len(rt_codes)}/{len(raw)} 只库内末根为盘中临时K线（rt=1，"
+              f"fetch_quotes --realtime 写入）：本信号基于近收盘价时点，收盘后重新"
+              f"刷库将覆盖为正式K线，建议收盘后复核。")
+
     # 前复权链路校验（断链 fail-closed）
     series_list: list[Series] = []
     adj_broken: list[str] = []
@@ -608,6 +632,10 @@ def _run(pool_path: Path, state_path: Path | None, p: StrategyParams,
     lines.append(f"- 数据覆盖率：{coverage:.1%}（下限 {p.coverage_min:.0%}）")
     lines.append("- 复权口径：前复权（pct_chg 复利连乘；动量/三日跌幅均为前复权价计算，"
                  "现价为真实收盘价）")
+    if rt_codes:
+        lines.append(f"- 数据口径：{len(rt_codes)} 只末根为盘中临时K线（rt=1，"
+                     "fetch_quotes --realtime）——信号基于近收盘价时点，"
+                     "收盘后刷库覆盖为正式K线，建议复核")
     lines.append(f"- 信号：{signal}｜持仓数 K={p.k}（缓冲 buffer={buffer} 名）")
     lines.append(f"- 目标：权益 {len(target)} 只 × {weight:.2%} + 防御槽 {n_def} × {weight:.2%}"
                  f"（权益仓位 {equity_pct:.2%}，防御 {n_def * weight:.2%}）")

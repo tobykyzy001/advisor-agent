@@ -26,11 +26,22 @@
      python fetch_quotes.py --snapshot 600519.SH[,000333.SZ]
      —— 打印每只最新收盘 / 涨跌幅 / 换手 / PE / PB / 市值 / 股息率（小数据，可进会话），
        顺手把拉到的日线增量写回行情库。供估值 / 持仓复核 / 论据核查等即取即用场景。
+  3) 盘中/近收盘实时叠加（--realtime，可与刷库 / 快照叠加）：
+     python fetch_quotes.py --watchlist output/watchlist/watchlist.yaml --realtime
+     —— tushare 日线收盘后才发布（约 15:00–17 点陆续），盘中刷库最多补到昨日；
+        加 --realtime 在正常取数之后追加一步：用公开实时报价（腾讯优先、新浪兜底，
+        纯标准库直连、免 token）给库内尚无今日正式K线的标的补一根「今日临时K线」，
+        w_bottom / momentum / etf_rotation 读库即用上近收盘价。规则（fail-closed）：
+        休市 / 停牌零成交 / 未开盘不造K线；港股暂无实时源，如实列出跳过；临时K线带
+        rt=1 标记，收盘后 tushare 正式日线发布，下次刷库自动覆盖升级为正式K线。
 
 本地 CSV 行情库（与 w_bottom_screen.py / momentum_strategy.py 共享 output/quotes-store/）：
-- 每只标的一份 CSV：<store>/<ts_code>.csv，列 trade_date,open,high,low,close,vol,pct_chg。
+- 每只标的一份 CSV：<store>/<ts_code>.csv，列 trade_date,open,high,low,close,vol,pct_chg,rt
+  （rt 为盘中临时K线标记：1=实时临时、空=tushare 正式日线；策略脚本按列名读取，
+  自动忽略 rt 列）。
 - pct_chg 为 tushare 日涨跌幅（%）：除权日按除权口径（基于除权昨收），是动量策略
   前复权计算的原料；旧版六列库（无 pct_chg）在刷库时自动按缺口区间回补。
+  临时K线的 pct_chg 按实时源昨收推算（除权日实时源昨收即除权口径昨收，口径一致）。
 - 幂等合并：同一批增量重复合并结果不变，中途失败重跑无副作用。
 
 token 来源（优先级）：--token 参数 > 环境变量 TUSHARE_TOKEN > 工作区 .env 里的
@@ -56,8 +67,10 @@ from pathlib import Path
 TUSHARE_API = "http://api.tushare.pro"
 
 #: CSV 列固定：与 w_bottom_screen.py / momentum_strategy.py 共用同一库结构。
-#: pct_chg（日涨跌幅 %，除权日为除权口径）供动量策略复利连乘构造前复权序列。
-CSV_FIELDS = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg"]
+#: pct_chg（日涨跌幅 %，除权日为除权口径）供动量策略复利连乘构造前复权序列；
+#: rt 为盘中临时K线标记（--realtime 写入：1=实时临时、空=tushare 正式日线），
+#: 策略脚本按列名读取各自所需字段、自动忽略 rt 列。
+CSV_FIELDS = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg", "rt"]
 
 #: 日线接口：A股（沪深北）走 daily，港股走 hk_daily（按 ts_code 后缀分流）
 _HK_SUFFIX = ".HK"
@@ -279,6 +292,17 @@ def store_first_date(store_dir: Path, ts_code: str) -> str | None:
     return min(r["trade_date"] for r in rows)
 
 
+def store_last_bar_is_rt(store_dir: Path, ts_code: str) -> bool:
+    """库内最后一根（按日期最大）是否为盘中临时K线（rt=1）。"""
+    fp = store_csv_path(store_dir, ts_code)
+    if not fp.exists():
+        return False
+    rows = _read_store_rows(fp)
+    if not rows:
+        return False
+    return max(rows, key=lambda r: r["trade_date"]).get("rt") == "1"
+
+
 def _next_date_str(trade_date: str) -> str:
     """'20250201'/'2025-02-01' → 次日 '20250202'（解析失败则原样返回）。"""
     d = _to_date(trade_date)
@@ -422,6 +446,192 @@ class _Throttle:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 实时行情（--realtime：盘中/近收盘用公开实时报价补今日临时K线，免 token）
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: 公开实时报价源（纯标准库直连，GBK 文本，批量一次请求；与 tushare 取数相互独立）：
+#: - 腾讯：https://qt.gtimg.cn/q=sh600519,sz000333,...（成交量单位：手；成交额：万元）
+#: - 新浪：https://hq.sinajs.cn/list=sh600519,...（需 Referer 头；成交量单位：股；成交额：元）
+_RT_TENCENT_URL = "https://qt.gtimg.cn/q="
+_RT_SINA_URL = "https://hq.sinajs.cn/list="
+_RT_BATCH = 40            # 单次请求的标的数上限（控制 URL 长度）
+_RT_TIMEOUT = 10
+
+_RT_TENCENT_ROW = re.compile(r'v_(\w+)="([^"]*)"')
+_RT_SINA_ROW = re.compile(r'hq_str_(\w+)="([^"]*)"')
+
+
+def _rt_symbol(ts_code: str) -> str | None:
+    """ts_code → 实时源符号（600519.SH → sh600519、833171.BJ → bj833171）。
+
+    港股（.HK）与未知后缀无对应实时源，返回 None（调用方如实跳过，不猜数据）。
+    """
+    raw = (ts_code or "").upper()
+    for suffix, prefix in ((".SH", "sh"), (".SZ", "sz"), (".BJ", "bj")):
+        if raw.endswith(suffix):
+            return prefix + raw[: -len(suffix)]
+    return None
+
+
+def _f(seq: list[str], i: int) -> float:
+    """按位取数值字段，越界/非数值返回 0.0。"""
+    try:
+        return float(seq[i])
+    except (IndexError, ValueError):
+        return 0.0
+
+
+def _norm_tencent(symbol: str, f: list[str]) -> dict | None:
+    """腾讯报价字段归一：f[3] 现价 / f[4] 昨收 / f[5] 今开 / f[30] 时间戳
+    （YYYYMMDDHHMMSS）/ f[33] 最高 / f[34] 最低 / f[36] 成交量（手）/ f[37] 成交额（万元）
+    / f[38] 换手率（%）。"""
+    ts = f[30] if len(f) > 30 else ""
+    if len(ts) < 14:
+        return None
+    return {"symbol": symbol, "name": f[1] if len(f) > 1 else "", "source": "腾讯",
+            "price": _f(f, 3), "prev_close": _f(f, 4), "open": _f(f, 5),
+            "high": _f(f, 33), "low": _f(f, 34),
+            "vol": _f(f, 36), "amount": _f(f, 37), "turnover": _f(f, 38),
+            "trade_date": ts[:8], "trade_time": f"{ts[8:10]}:{ts[10:12]}:{ts[12:14]}"}
+
+
+def _norm_sina(symbol: str, f: list[str]) -> dict | None:
+    """新浪报价字段归一：f[1] 今开 / f[2] 昨收 / f[3] 现价 / f[4] 最高 / f[5] 最低 /
+    f[8] 成交量（股→折手）/ f[9] 成交额（元→折万元）/ f[30] 日期 / f[31] 时间。"""
+    if len(f) < 32:
+        return None
+    d = f[30].replace("-", "")
+    if len(d) != 8 or not d.isdigit():
+        return None
+    return {"symbol": symbol, "name": f[0], "source": "新浪",
+            "price": _f(f, 3), "prev_close": _f(f, 2), "open": _f(f, 1),
+            "high": _f(f, 4), "low": _f(f, 5),
+            "vol": _f(f, 8) / 100.0, "amount": _f(f, 9) / 10000.0, "turnover": 0.0,
+            "trade_date": d, "trade_time": f[31]}
+
+
+def _http_get_text(url: str, headers: dict | None = None) -> str:
+    """GET 一个文本接口（GBK 解码；沿用关闭系统代理的直连 opener）。"""
+    req = urllib.request.Request(url, headers=headers or {})
+    with _OPENER.open(req, timeout=_RT_TIMEOUT) as resp:
+        return resp.read().decode("gbk", errors="replace")
+
+
+def fetch_realtime(ts_codes: list[str]) -> tuple[dict[str, dict], list[str]]:
+    """批量拉实时报价：腾讯优先、新浪兜底（腾讯没拿到的标的再走新浪）。
+
+    返回 ({ts_code: 归一行情}, 未取得报价的 ts_code 清单)；两类源均单位归一到
+    成交量（手）/ 成交额（万元）。逐源整体失败（网络不可达）自动换源，单标的
+    在两个源都拿不到 → 进未取得清单，由调用方如实报告。
+    """
+    quotes: dict[str, dict] = {}
+    missing = [c for c in ts_codes if _rt_symbol(c)]
+    # (URL 前缀, 请求头, 行正则, 字段分隔符, 归一函数)：腾讯优先、新浪兜底
+    for url, headers, row_re, sep, norm in (
+        (_RT_TENCENT_URL, None, _RT_TENCENT_ROW, "~", _norm_tencent),
+        (_RT_SINA_URL, {"Referer": "https://finance.sina.com.cn"}, _RT_SINA_ROW, ",", _norm_sina),
+    ):
+        if not missing:
+            break
+        for i in range(0, len(missing), _RT_BATCH):
+            batch = missing[i:i + _RT_BATCH]
+            try:
+                text = _http_get_text(url + ",".join(_rt_symbol(c) for c in batch), headers)
+            except (urllib.error.URLError, TimeoutError, OSError):
+                continue   # 该源本次请求失败：留给下一个源兜底
+            sym_by_code = {c: _rt_symbol(c) for c in batch}
+            got = {m.group(1): m.group(2) for m in row_re.finditer(text)}
+            for c in batch:
+                sym = sym_by_code[c]
+                if sym in got:
+                    q = norm(sym, got[sym].split(sep))
+                    if q:
+                        quotes[c] = q
+        missing = [c for c in missing if c not in quotes]
+    return quotes, [c for c in ts_codes if c not in quotes and _rt_symbol(c)]
+
+
+def _rt_bar(q: dict, today: str) -> dict | None:
+    """实时报价 → 今日临时K线行（CSV 口径 + rt=1 标记）。
+
+    fail-closed：报价日期非今天（休市 / 未开盘 / 隔夜残留）、停牌零成交、
+    现价或昨收异常 → 返回 None，绝不造K线。pct_chg 按实时源昨收推算——
+    除权日实时源的昨收即除权口径昨收，与 tushare 日涨跌幅口径一致。
+    """
+    if q["trade_date"] != today or q["price"] <= 0 or q["prev_close"] <= 0 or q["vol"] <= 0:
+        return None
+    price = q["price"]
+    pct = (price / q["prev_close"] - 1.0) * 100.0
+    return {"trade_date": today,
+            "open": q["open"] if q["open"] > 0 else price,
+            "high": max(q["high"], price) if q["high"] > 0 else price,
+            "low": min(q["low"], price) if q["low"] > 0 else price,
+            "close": price,
+            "vol": round(q["vol"], 2),
+            "pct_chg": f"{pct:.4f}",
+            "rt": "1"}
+
+
+def realtime_patch(store_dir: Path, codes: list[str], skip: set[str] | None = None) -> int:
+    """--realtime 收尾步骤：给库内尚无今日正式K线的标的补/刷新今日临时K线。
+
+    规则（fail-closed，不造数据）：
+    - 只处理 A 股（沪深北）代码；港股等无实时源的如实列出跳过；
+    - 只补「库内已有历史」的标的（tushare 侧失败/未入库的空库不凭一根临时K线建库）；
+    - 库内最后交易日已是今天且为正式K线 → 无需临时；已是今天的临时K线 → 用更新的
+      实时报价覆盖刷新（同日幂等）；
+    - 实时报价日期非今天（休市/未开盘）或停牌零成交 → 跳过并如实说明。
+    返回写入临时K线的标的数。
+    """
+    today = date.today().strftime("%Y%m%d")
+    skip = skip or set()
+    unsupported = [c for c in codes if _rt_symbol(c) is None]
+    if unsupported:
+        print(f"[realtime] 无实时源（港股暂不支持盘中临时K线），跳过：{'、'.join(unsupported)}")
+    cand: list[str] = []
+    for c in codes:
+        if _rt_symbol(c) is None or c in skip:
+            continue
+        n, last = store_status(store_dir, c)
+        if not n or not last:
+            continue
+        if last == today and not store_last_bar_is_rt(store_dir, c):
+            continue   # 已有今日正式K线
+        if last > today:
+            continue   # 库内日期异常超前，不动
+        cand.append(c)
+    if not cand:
+        print("[realtime] 无需补今日临时K线（库内均已是今日正式K线，或休市/无历史数据）。")
+        return 0
+
+    quotes, _ = fetch_realtime(cand)
+    patched: list[str] = []
+    skipped: list[str] = []
+    raw: dict[str, list] = {}
+    for c in cand:
+        bar = _rt_bar(quotes[c], today) if c in quotes else None
+        if bar:
+            raw[c] = [bar]
+            patched.append(c)
+        else:
+            skipped.append(c)
+    try:
+        if raw:
+            upsert_store(store_dir, raw)
+    except OSError as e:
+        print(f"[error] 临时K线写回行情库失败：{e}")
+        return 0
+    if patched:
+        stamp = max(quotes[c]["trade_time"] for c in patched)
+        print(f"[realtime] 今日临时K线入库：{len(patched)} 只（实时时点 {stamp}；"
+              f"收盘后 tushare 发布正式日线，下次刷库自动覆盖升级）。")
+    if skipped:
+        print(f"[realtime] 跳过 {len(skipped)} 只（休市/未开盘/停牌零成交/实时源未返回，"
+              f"不造K线）：{'、'.join(skipped)}")
+    return len(patched)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 模式一：刷库（增量 / 全量 / 免取，幂等合并写回）
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -437,10 +647,13 @@ def cmd_sync(args: argparse.Namespace) -> int:
     # 另：库内 pct_chg 列存在缺口（旧版六列库 / 增量时段未回补）的标的重取
     # 「库内首日 → 今天」整段（覆盖全部历史行，幂等合并后缺口闭合），
     # 避免动量策略的前复权计算出现断链。
+    # 另：库内末根是盘中临时K线（rt=1，--realtime 写入）→ 按「今天 → 今天」重取，
+    # tushare 收盘后发布正式日线时自动覆盖升级；未发布则 API 空、库不动。
     fetch_ranges: dict[str, tuple[str, str]] = {}
     full_codes: list[str] = []
     fresh_codes: list[str] = []
     gap_codes: list[str] = []
+    rt_upgrade: list[str] = []
     for code in codes:
         n, last = store_status(store_dir, code)
         if n and last and store_pct_gap(store_dir, code):
@@ -454,7 +667,11 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if n >= args.min_bars and last:
             start = _next_date_str(last)
             if start > today:
-                fresh_codes.append(code)
+                if store_last_bar_is_rt(store_dir, code):
+                    fetch_ranges[code] = (today, today)
+                    rt_upgrade.append(code)
+                else:
+                    fresh_codes.append(code)
             else:
                 fetch_ranges[code] = (start, today)
         else:
@@ -467,6 +684,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
     if gap_codes:
         print(f"其中 {len(gap_codes)} 只存在 pct_chg 缺口（旧版六列库或历史行未含涨跌幅），"
               f"已排入重取回补：{'、'.join(gap_codes)}")
+    if rt_upgrade:
+        print(f"其中 {len(rt_upgrade)} 只库内末根为盘中临时K线（rt=1），重取今日正式K线"
+              f"尝试覆盖升级（未发布则保持临时K线不动）。")
     if not fetch_ranges and not full_codes:
         print("全部标的库内均已最新，无需取数。")
         return 0
@@ -526,6 +746,11 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 print(f"  [warn] {code} 全量取数后仅 {n_bars} 根（min-bars="
                       f"{args.min_bars}），历史不足将被策略计算自动排除。")
 
+    # --realtime：tushare 收盘后才发布日线，盘中/近收盘用公开实时报价补今日临时K线，
+    # 策略脚本读库即用上近收盘价（tushare 侧失败的标的不参与，避免在残缺历史上叠临时K线）
+    if args.realtime:
+        realtime_patch(store_dir, codes, skip={c for c, _ in failures})
+
     if failures:
         print(f"\n完成：{len(codes) - len(failures)} 只成功 / {len(failures)} 只失败：")
         for code, msg in failures:
@@ -560,6 +785,16 @@ def _fmt_pct(v) -> str:
         return str(v)
 
 
+def _scale(v, ratio: float):
+    """估值基数按价格比外推（PE/PB/市值等比、股息率传倒数比）；None/异常透传 None。"""
+    if v is None or v == "":
+        return None
+    try:
+        return float(v) * ratio
+    except (TypeError, ValueError):
+        return None
+
+
 def cmd_snapshot(args: argparse.Namespace) -> int:
     codes = [normalize_code(x) for x in re.split(r"[,，\s]+", args.snapshot) if x.strip()]
     if not codes:
@@ -591,31 +826,81 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
     failures: list[str] = []
     merged: dict[str, list] = {}
+    # --realtime：先批量拉一次实时报价（免 token），仅保留「今日 + 有成交」的有效报价
+    # 供逐只叠加；港股无实时源、报价非今日（休市/未开盘/停牌）如实说明后按日线展示。
+    rt_quotes: dict[str, dict] = {}
+    if getattr(args, "realtime", False):
+        rt_codes = [c for c in codes if _rt_symbol(c)]
+        hk_codes = [c for c in codes if not _rt_symbol(c)]
+        if hk_codes:
+            print(f"[realtime] 无实时源（港股暂不支持盘中实时），按 tushare 日线展示："
+                  f"{'、'.join(hk_codes)}")
+        if rt_codes:
+            got_all, rt_missing = fetch_realtime(rt_codes)
+            rt_quotes = {c: q for c, q in got_all.items()
+                         if q["trade_date"] == today and q["price"] > 0 and q["vol"] > 0}
+            stale = [c for c in got_all if c not in rt_quotes]
+            if rt_missing:
+                print(f"[realtime] 实时源未返回（按 tushare 日线展示）：{'、'.join(rt_missing)}")
+            if stale:
+                print(f"[realtime] 实时报价非今日（休市/未开盘/停牌零成交，按 tushare 日线"
+                      f"展示）：{'、'.join(stale)}")
     for code in codes:
         try:
-            # 库内已最新（含今天）→ 直接用库内最后一根，零 API 拿价格
+            live = rt_quotes.get(code)
             n, last = store_status(store_dir, code)
             bar: dict | None = None
-            if n and last and _next_date_str(last) > today:
-                rows = _read_store_rows(store_csv_path(store_dir, code))
-                bar = rows[-1] if rows else None
+            official_rows: list[dict] = []
+            if live is None:
+                # 库内已最新（含今天）→ 直接用库内最后一根，零 API 拿价格
+                if n and last and _next_date_str(last) > today:
+                    rows = _read_store_rows(store_csv_path(store_dir, code))
+                    bar = rows[-1] if rows else None
+                else:
+                    throttle.wait()
+                    rows = ts_post_retry(
+                        daily_api_name(code), token,
+                        {"ts_code": code,
+                         "start_date": (date.today() - timedelta(days=15)).strftime("%Y%m%d"),
+                         "end_date": today},
+                        _DAILY_FIELDS,
+                    )
+                    merged[code] = rows
+                    bar = rows[-1] if rows else None
             else:
+                # 有今日实时报价：拉近 15 日日线取正式K线与上一交易日估值基数（顺带
+                # 把库内临时K线升级为正式K线）；tushare 已发布今日正式K线则正式优先，
+                # 未发布则叠加实时价成临时K线（rt=1）写回行情库。
                 throttle.wait()
-                rows = ts_post_retry(
+                official_rows = ts_post_retry(
                     daily_api_name(code), token,
                     {"ts_code": code,
                      "start_date": (date.today() - timedelta(days=15)).strftime("%Y%m%d"),
                      "end_date": today},
                     _DAILY_FIELDS,
-                )
-                merged[code] = rows
-                bar = rows[-1] if rows else None
+                ) or []
+                official = official_rows[-1] if official_rows else None
+                extra: list[dict] = []
+                if official is not None and str(official.get("trade_date")) == today:
+                    bar = official
+                else:
+                    rt_b = _rt_bar(live, today)
+                    if rt_b is not None:
+                        bar = rt_b
+                        extra = [rt_b]
+                    else:
+                        bar = official      # 实时报价异常兜底：退回正式末根
+                merged[code] = list(official_rows) + extra
             if bar is None:
                 failures.append(code)
                 print(f"===== {code} =====\n  无行情数据（代码可能有误或已退市）")
                 continue
 
-            # 估值字段（仅 A 股：daily_basic 不覆盖港股）
+            # 估值字段（仅 A 股：daily_basic 不覆盖港股）。盘中临时K线当日 daily_basic
+            # 未生成 → 基数取上一正式交易日，展示时按实时价/昨收线性外推。
+            basic_date = str(bar["trade_date"])
+            if bar.get("rt") == "1" and official_rows:
+                basic_date = str(official_rows[-1]["trade_date"])
             basic: dict | None = None
             basic_err = ""
             if daily_api_name(code) != "hk_daily":
@@ -623,34 +908,54 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
                     throttle.wait()
                     got = ts_post_retry(
                         "daily_basic", token,
-                        {"ts_code": code, "trade_date": str(bar["trade_date"])},
+                        {"ts_code": code, "trade_date": basic_date},
                         _BASIC_FIELDS,
                     )
                     basic = got[0] if got else None
                 except TushareApiError as e:
                     basic_err = str(e)
 
-            name = name_map.get(code, "")
+            is_rt = bar.get("rt") == "1"
+            name = name_map.get(code, "") or (live.get("name", "") if is_rt else "")
             print(f"===== {code}" + (f" {name}" if name else "") + " =====")
             td = _to_date(bar.get("trade_date"))
-            print(f"  日期：{td.isoformat() if td else bar.get('trade_date')}"
-                  "（数据时点：tushare 日线）")
-            pct = bar.get("pct_chg")
-            if pct in (None, "") and bar.get("pre_close") not in (None, ""):
-                try:
-                    pct = (float(bar["close"]) / float(bar["pre_close"]) - 1) * 100
-                except (TypeError, ValueError, ZeroDivisionError):
-                    pct = None
-            print(f"  收盘：{_fmt(bar.get('close'))}  涨跌幅：{_fmt_pct(pct)}"
-                  f"  成交量：{_fmt(bar.get('vol'))} 手")
+            if is_rt and live is not None:
+                print(f"  日期：{td.isoformat() if td else bar.get('trade_date')}"
+                      f"（盘中实时 {live['trade_time']}，来源：{live['source']}；"
+                      f"临时K线已写行情库，收盘后刷库自动覆盖）")
+                print(f"  最新价：{_fmt(bar.get('close'))}  涨跌幅：{_fmt_pct(bar.get('pct_chg'))}"
+                      f"  成交量：{_fmt(bar.get('vol'))} 手")
+            else:
+                date_label = ("（盘中临时K线 rt=1，收盘后刷库自动覆盖为正式K线）" if is_rt
+                              else "（数据时点：tushare 日线）")
+                print(f"  日期：{td.isoformat() if td else bar.get('trade_date')}{date_label}")
+                pct = bar.get("pct_chg")
+                if pct in (None, "") and bar.get("pre_close") not in (None, ""):
+                    try:
+                        pct = (float(bar["close"]) / float(bar["pre_close"]) - 1) * 100
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pct = None
+                print(f"  收盘：{_fmt(bar.get('close'))}  涨跌幅：{_fmt_pct(pct)}"
+                      f"  成交量：{_fmt(bar.get('vol'))} 手")
             if basic:
-                print(f"  换手率：{_fmt(basic.get('turnover_rate'), '%')}"
-                      f"  PE(TTM)：{_fmt(basic.get('pe_ttm'))}"
-                      f"  PE(静)：{_fmt(basic.get('pe'))}"
-                      f"  PB：{_fmt(basic.get('pb'))}")
-                print(f"  总市值：{_fmt(basic.get('total_mv'), '万')}"
-                      f"  流通市值：{_fmt(basic.get('circ_mv'), '万')}"
-                      f"  股息率(TTM)：{_fmt(basic.get('dv_ttm'), '%')}")
+                if is_rt and live is not None and live["prev_close"] > 0:
+                    r = live["price"] / live["prev_close"]
+                    print(f"  换手率：{_fmt(live.get('turnover') or None, '%')}"
+                          f"  PE(TTM)：{_fmt(_scale(basic.get('pe_ttm'), r))}*"
+                          f"  PE(静)：{_fmt(_scale(basic.get('pe'), r))}*"
+                          f"  PB：{_fmt(_scale(basic.get('pb'), r))}*")
+                    print(f"  总市值：{_fmt(_scale(basic.get('total_mv'), r), '万')}*"
+                          f"  流通市值：{_fmt(_scale(basic.get('circ_mv'), r), '万')}*"
+                          f"  股息率(TTM)：{_fmt(_scale(basic.get('dv_ttm'), 1.0 / r), '%')}*")
+                    print("  （* 实时估算：上一交易日 daily_basic 按实时价/昨收外推）")
+                else:
+                    print(f"  换手率：{_fmt(basic.get('turnover_rate'), '%')}"
+                          f"  PE(TTM)：{_fmt(basic.get('pe_ttm'))}"
+                          f"  PE(静)：{_fmt(basic.get('pe'))}"
+                          f"  PB：{_fmt(basic.get('pb'))}")
+                    print(f"  总市值：{_fmt(basic.get('total_mv'), '万')}"
+                          f"  流通市值：{_fmt(basic.get('circ_mv'), '万')}"
+                          f"  股息率(TTM)：{_fmt(basic.get('dv_ttm'), '%')}")
             elif basic_err:
                 print(f"  估值字段不可用：{basic_err}")
             else:
@@ -697,6 +1002,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--full-days", type=int, default=90,
                     help="全量取数回看自然日窗口（默认 90；动量场景传 420）")
     ap.add_argument("--token", default=None, help="tushare pro token（优先级最高）")
+    ap.add_argument("--realtime", action="store_true",
+                    help="盘中/近收盘实时叠加（免 token）：用公开实时报价（腾讯优先、"
+                         "新浪兜底）给库内补今日临时K线（rt=1），策略读库即用近收盘价；"
+                         "收盘后 tushare 发布正式日线，下次刷库自动覆盖。可叠加于刷库/快照")
     ap.add_argument("--env", default=".env", help=".env 文件路径（默认工作区 ./.env）")
     ap.add_argument("--interval", type=float, default=_INTERVAL_DEFAULT,
                     help=f"相邻 API 请求间隔秒数（默认 {_INTERVAL_DEFAULT}，防限流）")

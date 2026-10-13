@@ -86,7 +86,8 @@ score     = slope_ann × R²
 
 - **取数统一走 `fetch_quotes.py`**（自包含纯标准库，直连 tushare REST API）：刷库模式对照本地行情库增量补到最新交易日，行情数据**全程不经过任何 LLM 上下文**。token：`--token` 参数 / 环境变量 `TUSHARE_TOKEN` / 工作区 `.env` / 投研工具面板配置。
 - **无 token 直接拒绝运行**：`fetch_quotes.py` 退出码 2 时如实转告配置 token，**不得回退 akshare、不得编造行情**。
-- **共享行情库**：`output/quotes-store/<ts_code>.csv`（与 `momentum-rotation` / `w-bottom-screener` 共用，只读访问；列 `trade_date/open/high/low/close/vol/pct_chg`）。
+- **共享行情库**：`output/quotes-store/<ts_code>.csv`（与 `momentum-rotation` / `w-bottom-screener` 共用，只读访问；列 `trade_date/open/high/low/close/vol/pct_chg`，另有第 8 列 `rt` 为盘中临时K线标记，本脚本按列名读取自动忽略、末根 rt=1 时报告标注近收盘价时点）。
+- **盘中/近收盘出信号（`--realtime`）**：tushare 日线收盘后才发布，尾盘要按当日近收盘价出信号时刷库命令**追加 `--realtime`**（免 token）：用公开实时报价（腾讯优先、新浪兜底）给库内补今日临时K线（rt=1），本脚本读库自动用上并标注「近收盘价时点，建议收盘后复核」；收盘后重新刷库自动覆盖为正式K线。休市/未开盘/停牌零成交不造K线、港股不支持，均如实跳过。
 
 ## 总流程（两步：刷库 → 读库计算）
 
@@ -95,6 +96,7 @@ score     = slope_ann × R²
 ```bash
 # 第 1 步：刷库（对照 output/quotes-store/ 增量补到最新；新票/不足 45 根的全量取近 120 自然日）
 python scripts/fetch_quotes.py --watchlist output/etf-rotation/pool.yaml --min-bars 45 --full-days 120
+# 盘中/近收盘出信号：同一命令追加 --realtime（免 token，补今日临时K线，报告标注近收盘价时点）
 ```
 
 - 刷库输出为汇总式，**K 线与逐票明细不进会话**；一两句话转达即可。

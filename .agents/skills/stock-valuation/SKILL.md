@@ -17,7 +17,7 @@ description: 单一个股估值分析方法论。当用户要求对某一只具�
 **取实时估值字段 → 识别生意属性 → 选估值口径 → 交叉收敛 → 给方向性结论 + 关键节点**。整套核心是两步「分类」，其余是执行。
 
 ### 第 1 步：取实时估值字段（数据获取）
-- **首选 fetch_quotes.py 快照**：`python scripts/fetch_quotes.py --snapshot <代码>` 一次取最新收盘/换手/PE两口径/PB/市值/股息率（脚本自包含纯标准库，token 用环境变量 TUSHARE_TOKEN 或工作区 .env；投研工具流程中该脚本已由面板预置到工作区 `scripts/`）。字段映射、`ts_code` 后缀规则、口径局限(无前瞻PE、港股缺估值字段)见 `references/data-source.md`。
+- **首选 fetch_quotes.py 快照**：`python scripts/fetch_quotes.py --snapshot <代码>` 一次取最新收盘/换手/PE两口径/PB/市值/股息率（脚本自包含纯标准库，token 用环境变量 TUSHARE_TOKEN 或工作区 .env；投研工具流程中该脚本已由面板预置到工作区 `scripts/`）。盘中/近收盘估值可追加 `--realtime`（免 token）：叠加实时价，PE/PB/市值按实时价/昨收线性外推并标注实时估算（tushare 日线收盘后才发布）。字段映射、`ts_code` 后缀规则、口径局限(无前瞻PE、港股缺估值字段)见 `references/data-source.md`。
 - **机构一致预期（前瞻口径的分母）**：`python scripts/fetch_forecast.py <代码>`（可逗号分隔多只；`--mcap <总市值亿元>` 顺带输出各预测年前瞻PE）——直连同花顺 F10「盈利预测」页，解析净利润/EPS 一致预期年度汇总（机构数/最小/均值/最大/行业平均）、机构预测明细（含报告日期，判新鲜度与分歧度）、详细指标历史实际值（营收/净利/增速/ROE/每股净资产/静态PE，供质量溢价与周期中枢参考）；纯标准库、无需 token，投研工具流程中已由面板预置到工作区 `scripts/`。仅 A 股（港股无此页）；无机构覆盖或取数失败时如实标注数据缺口，不编造。
 - **fetch_quotes 不可用/失败时**：退回 `scripts/fetch_snapshot.py <代码>` 拉取最新价、PB、PE 三口径(静态/TTM/动态)、总市值/流通市值、营收与净利同比、换手率、涨跌幅（腾讯/东财双源）。
 - 脚本用 `curl` 直连（Git Bash 下 curl **不读 Windows 系统代理**，能绕过本机被墙/损坏的代理）腾讯 `qt.gtimg.cn` 与东财 `push2.eastmoney.com` 公开接口，双源交叉核对。

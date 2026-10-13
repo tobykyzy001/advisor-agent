@@ -47,7 +47,7 @@ output/portfolio/           # 持仓清单（gitignore，portfolio-tracker 运�
 output/videos/              # B站视频转录产物（gitignore，bili-video-summary 运行时数据）
 output/copy-trade/          # 抄作业运行时产物（gitignore，copy-trade：原始HTML/解析消息流/回测结果/别名覆盖）
 output/watchlist/           # 观察仓清单（gitignore，watchlist-manager 唯一写入口；w-bottom-screener / momentum-rotation 只读共用）
-output/quotes-store/        # 本地 CSV 行情库（gitignore，每标的一份 <ts_code>.csv；fetch_quotes.py 刷库写回，w-bottom-screener / momentum-rotation 只读共用）
+output/quotes-store/        # 本地 CSV 行情库（gitignore，每标的一份 <ts_code>.csv，7 列日线 + rt 临时K线标记列；fetch_quotes.py 刷库写回，w-bottom-screener / momentum-rotation 只读共用）
 output/w-bottom/            # W底筛选取数缓存与报告（gitignore，w-bottom-screener 运行时数据）
 output/momentum/            # 动量轮动取数缓存、组合信号报告与持仓状态（gitignore，momentum-rotation 运行时数据）
 output/etf-rotation/        # ETF 池清单 pool.yaml、轮动信号报告与持仓状态（gitignore，etf-rotation 运行时数据）
@@ -67,6 +67,7 @@ output/research/            # 研报阅读产物：正文抽取、claims、行�
 - 默认 `provider: akshare`（联网实时）；网络不可用或未安装时自动回退 `LocalProvider`（内置示例数据），保证离线可演示。
 - `provider: local` 强制用示例数据。港股/财务字段扩展在 `data/fetcher.py` 的 `AkshareProvider` 中。
 - **统一行情取数 CLI（tushare REST 直连）**：所有行情经 `src/workspace-init/fetch_quotes.py`（自包含纯标准库，随插件分发，面板场景由投研工具预置到工作区 scripts/）直连 tushare pro REST API：刷库模式对照 `output/quotes-store/` 增量补到最新交易日（幂等合并），快照模式（`--snapshot`）出最新收盘/PE/PB/市值等估值字段，供 W底/动量/估值/持仓复核/论据核查使用；行情数据全程不经过 LLM 上下文。token 优先级：投研工具面板配置（随指令以 `--token` 参数传递，存宿主设置）> 环境变量 `TUSHARE_TOKEN` > 工作区 `.env`（见 `.env.example`），均不入库。
+- **盘中/近收盘实时叠加（`--realtime`，免 token）**：tushare 日线收盘后才发布（约 15:00–17 点），盘中刷库最多补到昨日；`fetch_quotes.py --realtime`（可叠加于刷库/快照）在正常取数后追加一步——用公开实时报价（腾讯优先、新浪兜底，纯标准库直连）给库内尚无今日正式K线的标的补一根**今日临时K线**（CSV 第 8 列 `rt=1` 标记），W底/动量/ETF轮动读库即用上近收盘价，策略脚本检测到 rt 末根会在标准输出与报告标注「近收盘价时点，建议收盘后复核」；快照模式叠加实时价展示并按 实时价/昨收 线性外推 PE/PB/市值（标注实时估算）。fail-closed：休市/未开盘/停牌零成交不造K线、如实跳过；港股暂无实时源、如实列出；收盘后 tushare 正式日线发布，下次刷库自动覆盖升级（rt 标记消失）。
 - **机构一致预期取数 CLI（同花顺 F10 直连）**：前瞻估值的分母（机构预测净利润/EPS 均值，tushare 没有）经 `src/workspace-init/fetch_forecast.py`（自包含纯标准库、**无需 token**，随插件分发，面板场景由投研工具预置到工作区 scripts/）直连同花顺 F10「盈利预测」页解析：净利润/EPS 一致预期年度汇总（年度/机构数/最小/均值/最大/行业平均）、机构预测明细（机构/研究员/各年 EPS/净利润/报告日期）、详细指标历史实际值与预测均值（营收/净利/增速/ROE/每股净资产/静态PE）；`--mcap <总市值亿元>` 可追加各预测年前瞻PE。表格按 caption/表头内容识别、不按位置猜，解析不到如实报缺口。仅 A 股（沪深北，含北交所；港股无此页、明确报错）。供 stock-valuation 前瞻PE/PEG 与 prosperity-picking 选股估值复用；输出小体量、可进会话上下文。
 - 联网拿到的宏观/行业数据标注数据时点。
 

@@ -70,7 +70,7 @@ python scripts/report_reader.py --input <入口> --claims output/research/claims
 | A6 | 与机构一致预期偏离（>30%） | **存疑**，只做差异分析，**绝不据此改研报数字** |
 | A7 | 缺口（缺目标价/评级/预测/现价/一致预期） | 登记，结论限定在可用字段内 |
 
-取证据走统一口径，数字不经过会话手抄：`fetch_quotes.py --snapshot <代码>` 出快照（现价/总市值/PE/PB/股息率）、
+取证据走统一口径，数字不经过会话手抄：`fetch_quotes.py --snapshot <代码>` 出快照（现价/总市值/PE/PB/股息率；盘中/近收盘可追加 `--realtime` 叠加实时价）、
 `fetch_forecast.py <代码> --mcap <总市值亿元>` 出机构一致预期；两者输出重定向到文件后由脚本自己解析。
 
 ### 第 3 步：采信账本 → 估值桥

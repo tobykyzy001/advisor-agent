@@ -14,7 +14,9 @@
 fetch_quotes.py 刷库写回）：
 - 每只标的一份 CSV：output/quotes-store/<ts_code>.csv，列
   trade_date,open,high,low,close,vol,pct_chg（本脚本只读 OHLC/vol；
-  pct_chg 列供动量策略做前复权计算，形态判定不消费该列）。
+  pct_chg 列供动量策略做前复权计算，形态判定不消费该列）；fetch_quotes.py
+  另写第 8 列 rt（--realtime 盘中临时K线标记，本脚本按列名读取自动忽略，
+  末根 rt=1 时报告会标注「近收盘价时点」）。
 - 判定前做数据门禁：库内无数据 / 最后交易日距今超过 10 个自然日的标的视为缺口，
   fail-closed 列出缺口并提示先跑 fetch_quotes.py，不拿陈旧数据误出形态。
 
@@ -309,6 +311,20 @@ def read_store(store_dir: Path, ts_code: str) -> list[dict]:
     return sorted(rows, key=lambda r: r["trade_date"])
 
 
+def store_last_bar_rt(store_dir: Path, ts_code: str) -> bool:
+    """库内末根是否为 fetch_quotes --realtime 写入的盘中临时K线（rt=1）。
+
+    直接读 CSV 原始行（本脚本 CSV_FIELDS 不含 rt 列，DictReader 按文件表头
+    读取即可拿到 rt；旧版六/七列库无该列自然返回 False）。
+    """
+    fp = store_csv_path(store_dir, ts_code)
+    if not fp.exists():
+        return False
+    with fp.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    return bool(rows) and (rows[-1].get("rt") or "").strip() == "1"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 本地 CSV 行情库（每标的一份，增量合并，幂等）
 # ═══════════════════════════════════════════════════════════════════════════
@@ -435,6 +451,14 @@ def _run(watchlist_path: Path, out_dir: Path, params: WBottomParams,
               f" --min-bars {params.lookback} --full-days 90")
         return 1
 
+    # 盘中临时K线感知：fetch_quotes --realtime 写入的 rt=1 末根 → 判定基于近收盘价
+    # 时点而非正式收盘价，标准输出与报告都如实标注（收盘后刷库自动覆盖为正式K线）
+    rt_count = sum(1 for c in raw if store_last_bar_rt(store_dir, c))
+    if rt_count:
+        print(f"[notice] {rt_count}/{len(raw)} 只库内末根为盘中临时K线（rt=1，"
+              f"fetch_quotes --realtime 写入）：判定基于近收盘价时点，收盘后重新"
+              f"刷库将覆盖为正式K线，建议收盘后复核。")
+
     name_map = {it.ts_code: it.name for it in items}
     series_list: list[Series] = [rows_to_series(ts, rows) for ts, rows in raw.items()]
     hits = screen(series_list, params)
@@ -447,6 +471,10 @@ def _run(watchlist_path: Path, out_dir: Path, params: WBottomParams,
     lines.append("")
     lines.append(f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"- 数据截止：{as_of}（本地行情库 {store_dir}，由 fetch_quotes.py 刷库）")
+    if rt_count:
+        lines.append(f"- 数据口径：{rt_count} 只末根为盘中临时K线（rt=1，"
+                     "fetch_quotes --realtime）——判定基于近收盘价时点，"
+                     "收盘后刷库覆盖为正式K线，建议复核")
     lines.append(f"- 扫描标的数：{len(series_list)}")
     lines.append(f"- 命中数：{len(hits)}")
     lines.append("")

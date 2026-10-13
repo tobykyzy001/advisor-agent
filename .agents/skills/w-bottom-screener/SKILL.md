@@ -25,6 +25,11 @@ description: 观察仓「W底 + 放量」形态筛选技能。当用户要求「
   越攒越厚，由 `fetch_quotes.py` 幂等合并写回（按 trade_date 去重、新行覆盖同日旧行）。
   本脚本对库**只读**；判定前做数据门禁：库内无数据或最后交易日距今超过 10 自然日的标的视为缺口，
   fail-closed 提示先刷库，不拿陈旧数据误出形态。
+- **盘中/近收盘筛选（`--realtime`）**：tushare 日线收盘后才发布，尾盘要按当日近收盘价筛选时，
+  刷库命令**追加 `--realtime`**（免 token）：用公开实时报价（腾讯优先、新浪兜底）给库内补今日
+  临时K线（第 8 列 rt=1），本脚本读库自动用上并标注「近收盘价时点，建议收盘后复核」；收盘后
+  重新刷库自动覆盖为正式K线。注意盘中「放量」是**部分日累计成交量**，量比略低估；休市/停牌
+  零成交不造K线、港股不支持，均如实跳过。
 
 ## W底口径（可参数化，默认如下）
 
@@ -57,6 +62,7 @@ fetch_quotes.py 对照行情库增量拉数并幂等写回（行情只走「API 
 
 ```bash
 python scripts/fetch_quotes.py --watchlist output/watchlist/watchlist.yaml --min-bars 30 --full-days 90
+# 盘中/近收盘筛选：同一命令追加 --realtime（免 token，补今日临时K线；注意盘中量比为部分日口径）
 ```
 
 - 观察仓清单在 `output/watchlist/watchlist.yaml`（已被 gitignore，不入库，属个人关注信息）。

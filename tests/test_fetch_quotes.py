@@ -205,7 +205,8 @@ def test_upsert_store_creates_csv(tmp_path):
     merged = fq.upsert_store(tmp_path, {"A.SH": [_bar(date(2025, 1, 2), 1.5),
                                                  _bar(date(2025, 1, 3), 1.6)]})
     fp = tmp_path / "A.SH.csv"
-    assert fp.read_text(encoding="utf-8").splitlines()[0] == "trade_date,open,high,low,close,vol,pct_chg"
+    assert fp.read_text(encoding="utf-8").splitlines()[0] == \
+        "trade_date,open,high,low,close,vol,pct_chg,rt"
     assert [r["trade_date"] for r in merged["A.SH"]] == ["20250102", "20250103"]
     assert fq.store_status(tmp_path, "A.SH") == (2, "20250103")
 
@@ -594,3 +595,320 @@ def test_sync_no_gap_no_refill(tmp_path, capsys, monkeypatch):
     assert rc == 0
     assert calls[0][1]["start_date"] == today.strftime("%Y%m%d")   # 正常增量区间
     assert "pct_chg 缺口" not in capsys.readouterr().out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# --realtime：盘中/近收盘实时叠加（腾讯/新浪公开源解析、临时K线、覆盖升级）
+# ─────────────────────────────────────────────────────────────────────────
+
+# 腾讯接口真实返回格式样例（GBK 文本，v_<symbol>="字段~字段~…"；截取自实测响应）
+_TENCENT_TEXT = (
+    'v_sh600519="1~贵州茅台~600519~1270.53~1288.00~1287.00~24248~11292~12944~1270.17~1~'
+    '1270.09~5~1270.08~7~1270.03~2~1270.02~5~1270.52~1~1270.54~1~1270.55~4~1270.56~7~'
+    '1270.60~1~~20261013145050~-17.47~-1.36~1288.48~1268.11~1270.53/24248/3097321805~'
+    '24248~309732~0.19~19.50~~1288.48~1268.11~1.58~15882.66~15882.66~6.32~1416.80~1159.20~'
+    '0.80~6~1277.37~17.84~19.29~~~0.06~309732.1805~0.0000~0~   A~GP-A~-5.83~2.83~4.09~'
+    '32.41~27.30~1539.98~1151.01~1.43~-3.46~4.92~1250081601~1250081601~17.65~-8.67~'
+    '1250081601~~~-7.07~-0.09~~CNY~0~___D__F__N~1271.00~-8~";\n'
+)
+
+# 新浪接口真实返回格式样例（GBK 文本，var hq_str_<symbol>="字段,字段,…";成交量单位为股）
+_SINA_TEXT = (
+    'var hq_str_sh600519="贵州茅台,1287.000,1288.000,1270.550,1288.480,1268.110,'
+    '1270.180,1270.520,2425369,3098084131.000,500,1270.180,400,1270.170,100,1270.090,'
+    '400,1270.080,100,1270.030,100,1270.520,700,1270.560,100,1270.600,100,1270.630,'
+    '100,1270.640,2026-10-13,14:50:53,00,";\n'
+)
+
+
+def test_rt_symbol():
+    assert fq._rt_symbol("600519.SH") == "sh600519"
+    assert fq._rt_symbol("000333.SZ") == "sz000333"
+    assert fq._rt_symbol("833171.BJ") == "bj833171"
+    assert fq._rt_symbol("510300.SH") == "sh510300"
+    assert fq._rt_symbol("00700.HK") is None      # 港股无实时源，如实跳过
+    assert fq._rt_symbol("") is None
+
+
+def test_norm_tencent():
+    q = fq._norm_tencent("sh600519", _TENCENT_TEXT.split('"')[1].split("~"))
+    assert q["name"] == "贵州茅台"
+    assert q["price"] == 1270.53 and q["prev_close"] == 1288.00 and q["open"] == 1287.00
+    assert q["high"] == 1288.48 and q["low"] == 1268.11
+    assert q["vol"] == 24248.0                  # 腾讯成交量原生单位：手
+    assert q["amount"] == 309732.0              # 成交额原生单位：万元
+    assert q["turnover"] == 0.19
+    assert q["trade_date"] == "20261013" and q["trade_time"] == "14:50:50"
+
+
+def test_norm_sina_unit_conversion():
+    q = fq._norm_sina("sh600519", _SINA_TEXT.split('"')[1].split(","))
+    assert q["name"] == "贵州茅台"
+    assert q["price"] == 1270.55 and q["prev_close"] == 1288.00 and q["open"] == 1287.00
+    assert abs(q["vol"] - 24253.69) < 0.01      # 股 → 手（/100）
+    assert abs(q["amount"] - 309808.4131) < 1   # 元 → 万元（/10000）
+    assert q["trade_date"] == "20261013" and q["trade_time"] == "14:50:53"
+
+
+def test_norm_source_short_row_rejected():
+    """字段数不足（越界/脏行）→ 归一失败返回 None，不猜数据。"""
+    assert fq._norm_tencent("sh600519", ["1", "贵州茅台"]) is None
+    assert fq._norm_sina("sh600519", ["贵州茅台", "1.0"]) is None
+
+
+def test_fetch_realtime_tencent_then_sina(monkeypatch):
+    """腾讯整体不可达 → 新浪兜底；请求 URL 用实时源符号（sh600519 而非 600519.SH）。"""
+    seen_urls = []
+
+    def fake_get(url, headers=None):
+        seen_urls.append(url)
+        if "qt.gtimg.cn" in url:
+            raise OSError("腾讯不可达")
+        assert headers and headers.get("Referer")     # 新浪需 Referer 头
+        return _SINA_TEXT
+
+    monkeypatch.setattr(fq, "_http_get_text", fake_get)
+    quotes, missing = fq.fetch_realtime(["600519.SH", "00700.HK"])
+    assert missing == []                              # 港股无符号，不进未取得清单
+    assert set(quotes) == {"600519.SH"}
+    assert quotes["600519.SH"]["source"] == "新浪"
+    assert quotes["600519.SH"]["price"] == 1270.55
+    # 两个源的 URL 都必须携带实时源符号，而非 ts_code
+    assert "q=sh600519" in seen_urls[0]
+    assert "list=sh600519" in seen_urls[1]
+
+
+def test_fetch_realtime_both_sources_fail(monkeypatch):
+    """两源均失败 → 如实进未取得清单。"""
+    def fake_get(url, headers=None):
+        raise OSError("网络不可达")
+
+    monkeypatch.setattr(fq, "_http_get_text", fake_get)
+    quotes, missing = fq.fetch_realtime(["600519.SH"])
+    assert quotes == {} and missing == ["600519.SH"]
+
+
+def _live_quote(price=10.5, prev=10.0, vol=1234.0, tdate=None, **kw):
+    today = tdate or date.today().strftime("%Y%m%d")
+    q = {"symbol": "sh600519", "name": "测试", "source": "腾讯", "price": price,
+         "prev_close": prev, "open": kw.get("open", 10.1), "high": kw.get("high", 10.6),
+         "low": kw.get("low", 9.9), "vol": vol, "amount": 12000.0,
+         "turnover": kw.get("turnover", 0.5), "trade_date": today,
+         "trade_time": "14:52:31"}
+    q.update({k: v for k, v in kw.items()
+              if k in ("open", "high", "low", "turnover")})
+    return q
+
+
+def test_rt_bar_valid():
+    today = date.today().strftime("%Y%m%d")
+    bar = fq._rt_bar(_live_quote(price=10.5, prev=10.0, open=10.1, high=10.6, low=9.9), today)
+    assert bar["trade_date"] == today
+    assert bar["close"] == 10.5 and bar["open"] == 10.1
+    assert bar["high"] == 10.6 and bar["low"] == 9.9
+    assert bar["vol"] == 1234.0
+    assert bar["pct_chg"] == "5.0000"               # (10.5/10-1)*100
+    assert bar["rt"] == "1"                         # 临时K线标记
+
+
+def test_rt_bar_defensive_clamps():
+    """开盘价为 0 / 最高最低缺失 → 用现价兜底并夹逼，不写脏值。"""
+    today = date.today().strftime("%Y%m%d")
+    bar = fq._rt_bar(_live_quote(open=0.0, high=0.0, low=0.0), today)
+    assert bar["open"] == 10.5 and bar["high"] == 10.5 and bar["low"] == 10.5
+
+
+def test_rt_bar_fail_closed():
+    today = date.today().strftime("%Y%m%d")
+    # 报价日期非今天（休市/未开盘/隔夜残留）→ 不造K线
+    assert fq._rt_bar(_live_quote(tdate="19990101"), today) is None
+    # 停牌零成交 → 不造K线
+    assert fq._rt_bar(_live_quote(vol=0.0), today) is None
+    # 现价/昨收异常 → 不造K线
+    assert fq._rt_bar(_live_quote(price=0.0), today) is None
+    assert fq._rt_bar(_live_quote(prev=0.0), today) is None
+
+
+def test_store_last_bar_is_rt(tmp_path):
+    fq.upsert_store(tmp_path, {"A.SH": [_bar(date(2025, 1, 2), 10.0, pct_chg=1.0)]})
+    assert fq.store_last_bar_is_rt(tmp_path, "A.SH") is False
+    fq.upsert_store(tmp_path, {"A.SH": [{"trade_date": "20250103", "open": 10, "high": 10,
+                                         "low": 10, "close": 10.2, "vol": 100,
+                                         "pct_chg": 2.0, "rt": "1"}]})
+    assert fq.store_last_bar_is_rt(tmp_path, "A.SH") is True
+    assert fq.store_last_bar_is_rt(tmp_path, "NOPE.SH") is False
+
+
+def test_sync_rt_bar_upgrade_to_official(tmp_path, capsys, monkeypatch):
+    """库内末根是临时K线（rt=1）→ 刷库按「今天→今天」重取；tushare 已发布则覆盖升级。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fq.upsert_store(store, {"600519.SH": [
+        _bar(today - timedelta(days=29 - i), 10.0, pct_chg=0.1) for i in range(30)]})
+    fq.upsert_store(store, {"600519.SH": [
+        {"trade_date": today.strftime("%Y%m%d"), "open": 10.5, "high": 10.6, "low": 10.4,
+         "close": 10.55, "vol": 5000.0, "pct_chg": 0.5, "rt": "1"}]})
+    fake, calls = _fake_api(daily_rows=[_bar(today, 10.6, pct_chg=0.6)])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+    rc = fq.main(["--codes", "600519.SH", "--token", "t",
+                  "--store", str(store), "--interval", "0"])
+    assert rc == 0
+    assert calls[0][1]["start_date"] == today.strftime("%Y%m%d")   # 只重取今天
+    assert calls[0][1]["end_date"] == today.strftime("%Y%m%d")
+    assert "盘中临时K线（rt=1），重取今日正式K线" in capsys.readouterr().out
+    rows = fq._read_store_rows(fq.store_csv_path(store, "600519.SH"))
+    assert rows[-1]["trade_date"] == today.strftime("%Y%m%d")
+    assert rows[-1].get("rt") != "1"          # 已被正式K线覆盖，rt 标记消失
+    assert float(rows[-1]["close"]) == 10.6
+
+
+def test_sync_rt_bar_kept_when_unpublished(tmp_path, capsys, monkeypatch):
+    """库内末根是临时K线、tushare 尚未发布今日日线 → 重取空、临时K线原样保留。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fq.upsert_store(store, {"600519.SH": [
+        _bar(today - timedelta(days=29 - i), 10.0, pct_chg=0.1) for i in range(30)] + [
+        {"trade_date": today.strftime("%Y%m%d"), "open": 10.5, "high": 10.6, "low": 10.4,
+         "close": 10.55, "vol": 5000.0, "pct_chg": 0.5, "rt": "1"}]})
+    fake, _ = _fake_api(daily_rows=[])               # tushare 未发布 → 空
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+    rc = fq.main(["--codes", "600519.SH", "--token", "t",
+                  "--store", str(store), "--interval", "0"])
+    assert rc == 0
+    assert fq.store_last_bar_is_rt(store, "600519.SH") is True   # 临时K线不动
+
+
+def test_sync_realtime_patches_today_bar(tmp_path, capsys, monkeypatch):
+    """--realtime：库内补到昨日、实时报价为今日 → 今日临时K线入库（rt=1）。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fq.upsert_store(store, {"600519.SH": [
+        _bar(today - timedelta(days=30 - i), 10.0, pct_chg=0.1) for i in range(30)]})
+    # 库内末根=昨天（tushare 盘中最多发布到昨日）
+    rows = fq._read_store_rows(fq.store_csv_path(store, "600519.SH"))
+    assert rows[-1]["trade_date"] != today.strftime("%Y%m%d")
+    fake, _ = _fake_api(daily_rows=[])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+
+    def fake_rt(ts_codes):
+        return ({"600519.SH": _live_quote(price=10.5, prev=10.0)}, [])
+
+    monkeypatch.setattr(fq, "fetch_realtime", fake_rt)
+    rc = fq.main(["--codes", "600519.SH", "--token", "t",
+                  "--store", str(store), "--interval", "0", "--realtime"])
+    assert rc == 0
+    n, last = fq.store_status(store, "600519.SH")
+    assert last == today.strftime("%Y%m%d") and n == 31
+    rows = fq._read_store_rows(fq.store_csv_path(store, "600519.SH"))
+    assert rows[-1]["rt"] == "1" and float(rows[-1]["close"]) == 10.5
+    out = capsys.readouterr().out
+    assert "今日临时K线入库：1 只" in out
+    assert "实时时点 14:52:31" in out
+
+
+def test_sync_realtime_skips_official_and_hk(tmp_path, capsys, monkeypatch):
+    """今日已有正式K线 → 不补；港股无实时源 → 如实列出跳过；休市报价 → 不造K线。"""
+    store = tmp_path / "store"
+    today = date.today()
+    # 600519 / 00700 库内末根=昨天（tushare 盘中最多发布到昨日）；000333 已有今日正式K线
+    fq.upsert_store(store, {"600519.SH": [
+        _bar(today - timedelta(days=30 - i), 10.0, pct_chg=0.1) for i in range(30)]})
+    fq.upsert_store(store, {"000333.SZ": [
+        _bar(today - timedelta(days=29 - i), 10.0, pct_chg=0.1) for i in range(30)]})
+    fq.upsert_store(store, {"00700.HK": [
+        _bar(today - timedelta(days=30 - i), 10.0, pct_chg=0.1) for i in range(30)]})
+    fake, _ = _fake_api(daily_rows=[])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+
+    called = []
+
+    def fake_rt(ts_codes):
+        called.extend(ts_codes)
+        # 600519 返回隔夜残留报价（日期非今日）→ 不造K线
+        return ({"600519.SH": _live_quote(tdate="19990101")}, [])
+
+    monkeypatch.setattr(fq, "fetch_realtime", fake_rt)
+    rc = fq.main(["--codes", "600519.SH,000333.SZ,00700.HK", "--token", "t",
+                  "--store", str(store), "--interval", "0", "--realtime"])
+    assert rc == 0
+    assert called == ["600519.SH"]                 # 正式K线已到 / 港股不参与
+    out = capsys.readouterr().out
+    assert "港股暂不支持盘中临时K线" in out
+    assert "跳过 1 只" in out and "600519.SH" in out
+    assert fq.store_status(store, "600519.SH")[1] != today.strftime("%Y%m%d")
+
+
+def test_snapshot_realtime_overlay(tmp_path, capsys, monkeypatch):
+    """--snapshot --realtime：tushare 未发布今日 → 实时价展示 + 估值外推 + 临时K线写库。"""
+    store = tmp_path / "store"
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    fake, calls = _fake_api(
+        daily_rows=[_bar(yesterday, 10.0, pct_chg=0.0)],       # tushare 只到昨天
+        basic_rows=[{"ts_code": "600519.SH", "trade_date": yesterday.strftime("%Y%m%d"),
+                     "close": 10.0, "turnover_rate": 0.4, "pe": 20.0, "pe_ttm": 19.0,
+                     "pb": 4.0, "dv_ttm": 2.0, "total_mv": 1000.0, "circ_mv": 800.0}])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+
+    def fake_rt(ts_codes):
+        return ({"600519.SH": _live_quote(price=10.5, prev=10.0, turnover=0.42)}, [])
+
+    monkeypatch.setattr(fq, "fetch_realtime", fake_rt)
+    rc = fq.main(["--snapshot", "600519", "--token", "t",
+                  "--store", str(store), "--interval", "0", "--realtime"])
+    assert rc == 0
+    # 估值基数取上一正式交易日（昨天），而非临时K线的今天
+    basic_call = next(c for c in calls if c[0] == "daily_basic")
+    assert basic_call[1]["trade_date"] == yesterday.strftime("%Y%m%d")
+    out = capsys.readouterr().out
+    assert "盘中实时 14:52:31，来源：腾讯" in out
+    assert "最新价：10.50" in out and "+5.00%" in out
+    assert "PE(TTM)：19.95*" in out                  # 19.0 × 10.5/10
+    assert "PB：4.20*" in out
+    assert "总市值：1,050.00万*" in out              # 1000 × 1.05
+    assert "股息率(TTM)：1.90%*" in out               # 2.0 / 1.05
+    assert "实时估算" in out
+    # 临时K线写回行情库
+    assert fq.store_status(store, "600519.SH")[1] == today.strftime("%Y%m%d")
+    assert fq.store_last_bar_is_rt(store, "600519.SH") is True
+
+
+def test_snapshot_realtime_official_wins(tmp_path, capsys, monkeypatch):
+    """--snapshot --realtime：tushare 已发布今日正式K线 → 正式优先，不做实时叠加。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fake, _ = _fake_api(daily_rows=[_bar(today, 10.8, pct_chg=0.8)],
+                        basic_rows=[{"pe_ttm": 21.0, "pb": 4.3}])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+
+    def fake_rt(ts_codes):
+        return ({"600519.SH": _live_quote(price=10.5)}, [])
+
+    monkeypatch.setattr(fq, "fetch_realtime", fake_rt)
+    rc = fq.main(["--snapshot", "600519", "--token", "t",
+                  "--store", str(store), "--interval", "0", "--realtime"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "收盘：10.80" in out                      # 正式K线价格
+    assert "实时估算" not in out
+    assert fq.store_last_bar_is_rt(store, "600519.SH") is False
+
+
+def test_snapshot_realtime_stale_quote_fallback(tmp_path, capsys, monkeypatch):
+    """--snapshot --realtime 但实时报价非今日（休市）→ 按 tushare 日线展示并说明。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fake, _ = _fake_api(daily_rows=[_bar(today - timedelta(days=1), 10.0, pct_chg=0.0)],
+                        basic_rows=[{"pe_ttm": 19.0}])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+
+    def fake_rt(ts_codes):
+        return ({"600519.SH": _live_quote(tdate="19990101")}, [])
+
+    monkeypatch.setattr(fq, "fetch_realtime", fake_rt)
+    rc = fq.main(["--snapshot", "600519", "--token", "t",
+                  "--store", str(store), "--interval", "0", "--realtime"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "实时报价非今日" in out
+    assert "收盘：10.00" in out and "tushare 日线" in out

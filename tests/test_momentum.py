@@ -776,3 +776,59 @@ def test_e2e_exdiv_stock_not_killed_by_trend_gate(tmp_path):
     st = json.loads(state.read_text(encoding="utf-8"))
     assert "SPLIT.SH" in st["target"]    # 拆股股不再被趋势关错杀
     assert "N1.SH" in st["target"]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 盘中临时K线感知（fetch_quotes --realtime 写入的 rt=1 末根）
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_store_last_bar_rt_detection(tmp_path):
+    """末根带 rt=1 → True；正式K线 / 旧版七列库 / 无文件 → False。"""
+    def _write_csv(code: str, rows: list[list]) -> None:
+        fp = tmp_path / f"{code}.csv"
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        with fp.open("w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            for row in rows:
+                w.writerow(row)
+
+    header8 = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg", "rt"]
+    _write_csv("RT.SH", [header8,
+                         ["20260101", 10, 10, 10, 10, 100, 0.1, ""],
+                         ["20260102", 10, 10, 10, 10.2, 100, 2.0, "1"]])
+    assert m.store_last_bar_rt(tmp_path, "RT.SH") is True
+    _write_csv("OFF.SH", [header8,
+                          ["20260101", 10, 10, 10, 10, 100, 0.1, "1"],
+                          ["20260102", 10, 10, 10, 10.2, 100, 2.0, ""]])
+    assert m.store_last_bar_rt(tmp_path, "OFF.SH") is False     # 末根已升级为正式K线
+    _write_csv("OLD.SH", [["trade_date", "open", "high", "low", "close", "vol", "pct_chg"],
+                          ["20260102", 10, 10, 10, 10.2, 100, 2.0]])
+    assert m.store_last_bar_rt(tmp_path, "OLD.SH") is False     # 旧版七列库无 rt 列
+    assert m.store_last_bar_rt(tmp_path, "NOPE.SH") is False
+
+
+def test_e2e_rt_bar_annotated_in_stdout_and_report(tmp_path, capsys):
+    """库内末根为 rt=1 盘中临时K线 → stdout 与信号报告均标注「近收盘价时点」。"""
+    codes = ["R1.SH", "R2.SH"]
+    watchlist = _write_watchlist(tmp_path, codes)
+    store = tmp_path / "store"
+    _write_store(store, {c: _fill_pct([
+        _bar(date.today() - timedelta(days=(129 - i)), 100.0 + i * 0.2)
+        for i in range(130)]) for c in codes})
+    # 把末根改写成 rt=1 盘中临时K线（_write_store 只写七列，这里直接补第 8 列）
+    for c in codes:
+        fp = store / f"{c}.csv"
+        lines = fp.read_text(encoding="utf-8").splitlines()
+        lines[0] = lines[0] + ",rt"
+        lines[-1] = lines[-1] + ",1"
+        fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    rc = m.main(["--watchlist", str(watchlist), "--state", str(tmp_path / "state.json"),
+                 "--store", str(store), "--out-dir", str(tmp_path / "out")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "盘中临时K线（rt=1" in out          # [notice] 标注
+    assert "近收盘价时点" in out
+    report = next((tmp_path / "out").glob("plan_*.md"))
+    text = report.read_text(encoding="utf-8")
+    assert "盘中临时K线（rt=1" in text        # 报告「数据口径」行
+    assert "建议复核" in text
