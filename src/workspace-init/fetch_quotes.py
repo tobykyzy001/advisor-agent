@@ -15,6 +15,7 @@
   1) 刷库（默认，--codes 或 --watchlist 二选一）：
      python fetch_quotes.py --watchlist output/watchlist/watchlist.yaml
          [--min-bars 30] [--full-days 90] [--store output/quotes-store]
+     python fetch_quotes.py --codes 510300.SH,000300.SH,511880.SH --full-days 6000
      —— 对照本地 CSV 行情库 output/quotes-store/ 给每只定区间：
        免取（库内已含今天 K 线）/ 增量（库内最后日期+1 → 今天）/ 全量（新票或库内
        根数不足 --min-bars，取近 --full-days 自然日），逐只调 API 拉日线后**幂等合并**
@@ -22,18 +23,25 @@
        成功/失败与入库根数汇总，逐票「入库 N 根」明细与 K 线一律不打印（大池子
        逐行刷屏只会白耗 agent 会话 token），仅异常（取数失败 / 全量后仍不足
        min-bars）逐只列出。
+       资产类型按代码自动分流：个股 daily、ETF/LOF fund_daily、指数 index_daily、
+       港股 hk_daily。指数必须带完整后缀（000300.SH / 399001.SZ / H00300.CSI），
+       裸写 000300 会按 A 股规则落到 .SZ。
   2) 快照（--snapshot）：
      python fetch_quotes.py --snapshot 600519.SH[,000333.SZ]
      —— 打印每只最新收盘 / 涨跌幅 / 换手 / PE / PB / 市值 / 股息率（小数据，可进会话），
        顺手把拉到的日线增量写回行情库。供估值 / 持仓复核 / 论据核查等即取即用场景。
-  3) 盘中/近收盘实时叠加（--realtime，可与刷库 / 快照叠加）：
-     python fetch_quotes.py --watchlist output/watchlist/watchlist.yaml --realtime
+       PE/PB/市值/股息率仅 A 股个股有；ETF/指数只展示价格与涨跌幅。
+  3) 盘中/近收盘实时叠加（--realtime，默认 auto，可叠加于刷库 / 快照）：
+     python fetch_quotes.py --watchlist output/watchlist/watchlist.yaml
      —— tushare 日线收盘后才发布（约 15:00–17 点陆续），盘中刷库最多补到昨日；
-        加 --realtime 在正常取数之后追加一步：用公开实时报价（腾讯优先、新浪兜底，
-        纯标准库直连、免 token）给库内尚无今日正式K线的标的补一根「今日临时K线」，
-        w_bottom / momentum / etf_rotation 读库即用上近收盘价。规则（fail-closed）：
-        休市 / 停牌零成交 / 未开盘不造K线；港股暂无实时源，如实列出跳过；临时K线带
-        rt=1 标记，收盘后 tushare 正式日线发布，下次刷库自动覆盖升级为正式K线。
+        默认 auto 模式下，北京时间 09:30–15:30 自动在正常取数后追加一步：用公开
+        实时报价（腾讯优先、新浪兜底，纯标准库直连、免 token）给库内尚无今日正式K线
+        的标的补一根「今日临时K线」，w_bottom / momentum / etf_rotation 读库即用上
+        近收盘价（尾盘调仓场景）。--realtime on 强制开启（裸写 --realtime 等效，
+        兼容旧用法）、--realtime off 关闭；auto 在窗口外不抓实时报价。
+        规则（fail-closed）：休市 / 停牌零成交 / 未开盘不造K线；港股暂无实时源，
+        如实列出跳过；临时K线带 rt=1 标记，收盘后 tushare 正式日线发布，
+        下次刷库自动覆盖升级为正式K线。
 
 本地 CSV 行情库（与 w_bottom_screen.py / momentum_strategy.py 共享 output/quotes-store/）：
 - 每只标的一份 CSV：<store>/<ts_code>.csv，列 trade_date,open,high,low,close,vol,pct_chg,rt
@@ -41,6 +49,8 @@
   自动忽略 rt 列）。
 - pct_chg 为 tushare 日涨跌幅（%）：除权日按除权口径（基于除权昨收），是动量策略
   前复权计算的原料；旧版六列库（无 pct_chg）在刷库时自动按缺口区间回补。
+  ETF/指数同口径；ETF 分红日的 pct_chg 已按除权价计算，复利连乘即为前复权收益
+  （510300 实测分红日 pct_chg 与 close/除权昨收-1 完全一致）。
   临时K线的 pct_chg 按实时源昨收推算（除权日实时源昨收即除权口径昨收，口径一致）。
 - 幂等合并：同一批增量重复合并结果不变，中途失败重跑无副作用。
 
@@ -61,7 +71,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 TUSHARE_API = "http://api.tushare.pro"
@@ -72,7 +82,7 @@ TUSHARE_API = "http://api.tushare.pro"
 #: 策略脚本按列名读取各自所需字段、自动忽略 rt 列。
 CSV_FIELDS = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg", "rt"]
 
-#: 日线接口：A股（沪深北）走 daily，港股走 hk_daily（按 ts_code 后缀分流）
+#: 日线接口分流：A股个股 daily、ETF/LOF fund_daily、指数 index_daily、港股 hk_daily
 _HK_SUFFIX = ".HK"
 
 #: 限速：默认相邻两次 API 请求的间隔秒数（免费档约 200 次/分钟，0.35s 是安全值）
@@ -114,7 +124,7 @@ def load_env_token(env_path: Path) -> str | None:
             continue
         val = m.group(1).strip()
         # 去掉行内注释（仅对未加引号的值生效）
-        if not (val.startswith('"') or val.startswith("'")):
+        if not val.startswith(('"', "'")):
             val = val.split("#", 1)[0].strip()
         # 去掉成对引号
         if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
@@ -395,7 +405,12 @@ def ts_post(api_name: str, token: str, params: dict, fields: str,
         raise TushareApiError(msg)
     data = payload.get("data") or {}
     cols = data.get("fields") or []
-    return [dict(zip(cols, row)) for row in (data.get("items") or [])]
+    rows = [dict(zip(cols, row)) for row in (data.get("items") or [])]
+    # tushare 日线类接口默认按 trade_date 倒序返回；统一升序，避免下游
+    # 「取最后一根 = 最新」的假设拿到最旧一根（快照/实时叠加都依赖该假设）。
+    if rows and "trade_date" in rows[0]:
+        rows.sort(key=lambda r: str(r.get("trade_date") or ""))
+    return rows
 
 
 def ts_post_retry(api_name: str, token: str, params: dict, fields: str) -> list[dict]:
@@ -418,9 +433,43 @@ def ts_post_retry(api_name: str, token: str, params: dict, fields: str) -> list[
     raise TushareApiError(f"重试 {len(_RETRY_DELAYS)} 次后仍失败：{last_err}")
 
 
+def _is_index_code(ts_code: str) -> bool:
+    """是否为指数代码：中证系列 .CSI，沪市 000xxx，深市 399xxx。"""
+    raw = (ts_code or "").upper()
+    if raw.endswith(".CSI"):
+        return True
+    code, _, suffix = raw.partition(".")
+    if suffix == "SH":
+        return code.startswith("000")
+    if suffix == "SZ":
+        return code.startswith("399")
+    return False
+
+
+def _is_etf_code(ts_code: str) -> bool:
+    """是否为场内基金代码：沪市 5 开头，深市 15/16 开头（ETF/LOF）。"""
+    code, _, suffix = (ts_code or "").upper().partition(".")
+    if suffix == "SH":
+        return code.startswith("5")
+    if suffix == "SZ":
+        return code.startswith(("15", "16"))
+    return False
+
+
 def daily_api_name(ts_code: str) -> str:
-    """日线接口分流：港股走 hk_daily，其余（沪深北）走 daily。"""
-    return "hk_daily" if ts_code.upper().endswith(_HK_SUFFIX) else "daily"
+    """日线接口分流：港股 hk_daily、指数 index_daily、场内基金 fund_daily、其余 daily。
+
+    指数须带完整后缀（000300.SH / 399001.SZ / H00300.CSI）——裸写 000300 会按
+    A 股规则落到 .SZ，与沪深300指数不是同一标的。
+    """
+    raw = (ts_code or "").upper()
+    if raw.endswith(_HK_SUFFIX):
+        return "hk_daily"
+    if _is_index_code(raw):
+        return "index_daily"
+    if _is_etf_code(raw):
+        return "fund_daily"
+    return "daily"
 
 
 #: 日线取数字段（多取 pre_close 供快照推算涨跌幅；pct_chg 写库保留供前复权计算）
@@ -464,9 +513,12 @@ _RT_SINA_ROW = re.compile(r'hq_str_(\w+)="([^"]*)"')
 def _rt_symbol(ts_code: str) -> str | None:
     """ts_code → 实时源符号（600519.SH → sh600519、833171.BJ → bj833171）。
 
-    港股（.HK）与未知后缀无对应实时源，返回 None（调用方如实跳过，不猜数据）。
+    港股（.HK）、指数与未知后缀无对应实时源，返回 None（调用方如实跳过，不猜数据）。
+    指数暂不接实时源：公开报价的指数字段口径与个股不同，避免造出脏K线。
     """
     raw = (ts_code or "").upper()
+    if _is_index_code(raw):
+        return None
     for suffix, prefix in ((".SH", "sh"), (".SZ", "sz"), (".BJ", "bj")):
         if raw.endswith(suffix):
             return prefix + raw[: -len(suffix)]
@@ -576,7 +628,7 @@ def realtime_patch(store_dir: Path, codes: list[str], skip: set[str] | None = No
     """--realtime 收尾步骤：给库内尚无今日正式K线的标的补/刷新今日临时K线。
 
     规则（fail-closed，不造数据）：
-    - 只处理 A 股（沪深北）代码；港股等无实时源的如实列出跳过；
+    - 只处理 A 股个股与场内基金；港股、指数等无实时源的如实列出跳过；
     - 只补「库内已有历史」的标的（tushare 侧失败/未入库的空库不凭一根临时K线建库）；
     - 库内最后交易日已是今天且为正式K线 → 无需临时；已是今天的临时K线 → 用更新的
       实时报价覆盖刷新（同日幂等）；
@@ -587,7 +639,7 @@ def realtime_patch(store_dir: Path, codes: list[str], skip: set[str] | None = No
     skip = skip or set()
     unsupported = [c for c in codes if _rt_symbol(c) is None]
     if unsupported:
-        print(f"[realtime] 无实时源（港股暂不支持盘中临时K线），跳过：{'、'.join(unsupported)}")
+        print(f"[realtime] 无实时源（港股/指数暂不支持盘中临时K线），跳过：{'、'.join(unsupported)}")
     cand: list[str] = []
     for c in codes:
         if _rt_symbol(c) is None or c in skip:
@@ -629,6 +681,43 @@ def realtime_patch(store_dir: Path, codes: list[str], skip: set[str] | None = No
         print(f"[realtime] 跳过 {len(skipped)} 只（休市/未开盘/停牌零成交/实时源未返回，"
               f"不造K线）：{'、'.join(skipped)}")
     return len(patched)
+
+
+#: 自动实时叠加窗口（北京时间）：盘中出近收盘价信号（尾盘调仓）+ 收盘后
+#: tushare 正式日线尚未发布的半小时空档。窗口外正式K线已发布或尚未开盘，
+#: 无叠加必要；休市/节假日窗口虽开，另有 realtime_patch 的 fail-closed
+#: （报价日期≠今日、零成交不造K线）兜底，此处不再另查交易日历。
+_RT_AUTO_START = (9, 30)
+_RT_AUTO_END = (15, 30)
+
+
+def rt_auto_window(now_bj: datetime | None = None) -> bool:
+    """自动实时叠加是否生效：北京时间 09:30–15:30（--realtime auto 的生效时段）。
+
+    now_bj 传当时的北京时间；缺省按 UTC+8 现算，不依赖进程本地时区。
+    """
+    if now_bj is None:
+        now_bj = datetime.now(UTC) + timedelta(hours=8)
+    hm = now_bj.hour * 60 + now_bj.minute
+    return (_RT_AUTO_START[0] * 60 + _RT_AUTO_START[1]
+            <= hm <= _RT_AUTO_END[0] * 60 + _RT_AUTO_END[1])
+
+
+def _rt_enabled(rt_arg: str) -> bool:
+    """--realtime 三态门控：on 恒开（裸写等效，兼容旧用法）、off 恒关、
+    auto 按北京时间 09:30–15:30 窗口自动开启（窗口外打印说明，防止误以为已叠加）。"""
+    if rt_arg == "on":
+        return True
+    if rt_arg == "off":
+        print("[realtime] 已关闭（--realtime off），本次不补今日临时K线。")
+        return False
+    if rt_auto_window():
+        return True
+    print("[realtime] 默认 auto：当前不在自动实时叠加窗口（北京时间 "
+          f"{_RT_AUTO_START[0]:02d}:{_RT_AUTO_START[1]:02d}–"
+          f"{_RT_AUTO_END[0]:02d}:{_RT_AUTO_END[1]:02d}），按正式K线口径取数；"
+          "盘中/近收盘叠加可显式 --realtime on。")
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -708,8 +797,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
             print(f"  {code} 取数失败：{e}")
             return False
         if is_full and not rows:
-            failures.append((code, "全量区间 API 返回 0 根（代码可能有误或已退市）"))
-            print(f"  {code} 全量区间 API 返回 0 根，请检查代码是否正确。")
+            failures.append((code, "全量区间 API 返回 0 根（代码可能有误、已退市，或与接口类型不匹配）"))
+            print(f"  {code} 全量区间 API 返回 0 根，请检查代码与后缀是否正确"
+                  f"（指数需带 .SH/.SZ/.CSI 后缀）。")
             return False
         merged[code] = rows
         return True
@@ -746,9 +836,10 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 print(f"  [warn] {code} 全量取数后仅 {n_bars} 根（min-bars="
                       f"{args.min_bars}），历史不足将被策略计算自动排除。")
 
-    # --realtime：tushare 收盘后才发布日线，盘中/近收盘用公开实时报价补今日临时K线，
-    # 策略脚本读库即用上近收盘价（tushare 侧失败的标的不参与，避免在残缺历史上叠临时K线）
-    if args.realtime:
+    # --realtime（三态，默认 auto 按北京时间 09:30–15:30 窗口自动）：tushare 收盘后
+    # 才发布日线，盘中/近收盘用公开实时报价补今日临时K线，策略读库即用上近收盘价
+    # （tushare 侧失败的标的不参与，避免在残缺历史上叠临时K线）
+    if _rt_enabled(args.realtime):
         realtime_patch(store_dir, codes, skip={c for c, _ in failures})
 
     if failures:
@@ -795,6 +886,13 @@ def _scale(v, ratio: float):
         return None
 
 
+def _latest_bar(rows: list[dict]) -> dict | None:
+    """按 trade_date 取最新一根（不依赖接口返回顺序，防倒序数据取到最旧一根）。"""
+    if not rows:
+        return None
+    return max(rows, key=lambda r: str(r.get("trade_date") or ""))
+
+
 def cmd_snapshot(args: argparse.Namespace) -> int:
     codes = [normalize_code(x) for x in re.split(r"[,，\s]+", args.snapshot) if x.strip()]
     if not codes:
@@ -826,14 +924,15 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
     failures: list[str] = []
     merged: dict[str, list] = {}
-    # --realtime：先批量拉一次实时报价（免 token），仅保留「今日 + 有成交」的有效报价
-    # 供逐只叠加；港股无实时源、报价非今日（休市/未开盘/停牌）如实说明后按日线展示。
+    # --realtime（三态，默认 auto 按北京时间 09:30–15:30 窗口自动）：先批量拉一次
+    # 实时报价（免 token），仅保留「今日 + 有成交」的有效报价供逐只叠加；港股/指数
+    # 无实时源、报价非今日（休市/未开盘/停牌）如实说明后按日线展示。
     rt_quotes: dict[str, dict] = {}
-    if getattr(args, "realtime", False):
+    if _rt_enabled(getattr(args, "realtime", "auto")):
         rt_codes = [c for c in codes if _rt_symbol(c)]
         hk_codes = [c for c in codes if not _rt_symbol(c)]
         if hk_codes:
-            print(f"[realtime] 无实时源（港股暂不支持盘中实时），按 tushare 日线展示："
+            print(f"[realtime] 无实时源（港股/指数暂不支持盘中实时），按 tushare 日线展示："
                   f"{'、'.join(hk_codes)}")
         if rt_codes:
             got_all, rt_missing = fetch_realtime(rt_codes)
@@ -855,7 +954,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
                 # 库内已最新（含今天）→ 直接用库内最后一根，零 API 拿价格
                 if n and last and _next_date_str(last) > today:
                     rows = _read_store_rows(store_csv_path(store_dir, code))
-                    bar = rows[-1] if rows else None
+                    bar = _latest_bar(rows)
                 else:
                     throttle.wait()
                     rows = ts_post_retry(
@@ -866,7 +965,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
                         _DAILY_FIELDS,
                     )
                     merged[code] = rows
-                    bar = rows[-1] if rows else None
+                    bar = _latest_bar(rows)
             else:
                 # 有今日实时报价：拉近 15 日日线取正式K线与上一交易日估值基数（顺带
                 # 把库内临时K线升级为正式K线）；tushare 已发布今日正式K线则正式优先，
@@ -879,7 +978,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
                      "end_date": today},
                     _DAILY_FIELDS,
                 ) or []
-                official = official_rows[-1] if official_rows else None
+                official = _latest_bar(official_rows)
                 extra: list[dict] = []
                 if official is not None and str(official.get("trade_date")) == today:
                     bar = official
@@ -893,17 +992,17 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
                 merged[code] = list(official_rows) + extra
             if bar is None:
                 failures.append(code)
-                print(f"===== {code} =====\n  无行情数据（代码可能有误或已退市）")
+                print(f"===== {code} =====\n  无行情数据（代码可能有误、已退市，或与接口类型不匹配）")
                 continue
 
-            # 估值字段（仅 A 股：daily_basic 不覆盖港股）。盘中临时K线当日 daily_basic
+            # 估值字段（daily_basic 仅覆盖 A 股个股）。盘中临时K线当日 daily_basic
             # 未生成 → 基数取上一正式交易日，展示时按实时价/昨收线性外推。
             basic_date = str(bar["trade_date"])
             if bar.get("rt") == "1" and official_rows:
-                basic_date = str(official_rows[-1]["trade_date"])
+                basic_date = str(_latest_bar(official_rows)["trade_date"])
             basic: dict | None = None
             basic_err = ""
-            if daily_api_name(code) != "hk_daily":
+            if daily_api_name(code) == "daily":
                 try:
                     throttle.wait()
                     got = ts_post_retry(
@@ -959,7 +1058,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
             elif basic_err:
                 print(f"  估值字段不可用：{basic_err}")
             else:
-                print("  估值字段不可用（daily_basic 仅覆盖 A 股，港股暂无）。")
+                print("  估值字段不可用（daily_basic 仅覆盖 A 股个股；港股/ETF/指数暂无）。")
         except TushareApiError as e:
             failures.append(code)
             print(f"===== {code} =====\n  取数失败：{e}")
@@ -989,12 +1088,14 @@ def main(argv: list[str] | None = None) -> int:
         description="统一行情取数 CLI：直连 tushare pro，增量刷库 / 估值快照，"
                     "本地 CSV 行情库 output/quotes-store/ 幂等合并写回。",
     )
-    ap.add_argument("--codes", help="标的清单（逗号分隔，如 600519.SH,000333.SZ；"
-                                     "支持简写 600519 / 00700）")
+    ap.add_argument("--codes", help="标的清单（逗号分隔，如 600519.SH,000333.SZ,"
+                                     "510300.SH,000300.SH；支持简写 600519 / 00700；"
+                                     "指数须带完整后缀）")
     ap.add_argument("--watchlist", default=None,
                     help="观察仓清单 YAML 路径（与 --codes 二选一）")
     ap.add_argument("--snapshot", default=None,
-                    help="快照模式：打印指定标的的最新行情与估值字段（逗号分隔）")
+                    help="快照模式：打印指定标的的最新行情与估值字段（逗号分隔；"
+                         "ETF/指数只展示价格与涨跌幅）")
     ap.add_argument("--store", default="output/quotes-store",
                     help="本地 CSV 行情库目录（默认 output/quotes-store，三技能共享）")
     ap.add_argument("--min-bars", type=int, default=30,
@@ -1002,10 +1103,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--full-days", type=int, default=90,
                     help="全量取数回看自然日窗口（默认 90；动量场景传 420）")
     ap.add_argument("--token", default=None, help="tushare pro token（优先级最高）")
-    ap.add_argument("--realtime", action="store_true",
+    ap.add_argument("--realtime", nargs="?", const="on", default="auto",
+                    choices=["auto", "on", "off"], metavar="{auto,on,off}",
                     help="盘中/近收盘实时叠加（免 token）：用公开实时报价（腾讯优先、"
                          "新浪兜底）给库内补今日临时K线（rt=1），策略读库即用近收盘价；"
-                         "收盘后 tushare 发布正式日线，下次刷库自动覆盖。可叠加于刷库/快照")
+                         "收盘后 tushare 发布正式日线，下次刷库自动覆盖。"
+                         "auto（默认）：北京时间 09:30–15:30 自动开启；"
+                         "on：强制开（裸写 --realtime 等效，兼容旧用法）；off：关闭")
     ap.add_argument("--env", default=".env", help=".env 文件路径（默认工作区 ./.env）")
     ap.add_argument("--interval", type=float, default=_INTERVAL_DEFAULT,
                     help=f"相邻 API 请求间隔秒数（默认 {_INTERVAL_DEFAULT}，防限流）")

@@ -12,7 +12,7 @@ import importlib.util
 import json
 import sys
 import urllib.error
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,6 +31,14 @@ def _load_module():
 
 
 fq = _load_module()
+
+
+@pytest.fixture(autouse=True)
+def _pin_rt_window_off(monkeypatch):
+    """把所有用例默认钉在「自动实时叠加窗口外」：--realtime 默认 auto 会按真实
+    北京时间判断是否抓实时报价，钉死窗口保证测试离线可复现；需要窗口内行为的
+    用例自行再次 monkeypatch（同一 monkeypatch 重复 setattr，后设置者生效）。"""
+    monkeypatch.setattr(fq, "rt_auto_window", lambda *a, **k: False)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -155,6 +163,8 @@ def test_resolve_token_missing_exits_2(tmp_path, capsys, monkeypatch):
     ("430047", "430047.BJ"),
     ("920118", "920118.BJ"),
     ("00700", "00700.HK"),
+    ("510300", "510300.SH"),        # 沪市 ETF 简写
+    ("159915", "159915.SZ"),        # 深市 ETF 简写
     ("600519.SH", "600519.SH"),
     ("00700.hk", "00700.HK"),
     ("  600519  ", "600519.SH"),
@@ -246,6 +256,58 @@ def test_daily_api_name():
     assert fq.daily_api_name("00700.HK") == "hk_daily"
     assert fq.daily_api_name("600519.SH") == "daily"
     assert fq.daily_api_name("833171.BJ") == "daily"
+    # ETF/LOF → fund_daily
+    assert fq.daily_api_name("510300.SH") == "fund_daily"
+    assert fq.daily_api_name("511880.SH") == "fund_daily"
+    assert fq.daily_api_name("159915.SZ") == "fund_daily"
+    # 指数 → index_daily（含中证系列与沪深指数）
+    assert fq.daily_api_name("000300.SH") == "index_daily"
+    assert fq.daily_api_name("000852.SH") == "index_daily"
+    assert fq.daily_api_name("399001.SZ") == "index_daily"
+    assert fq.daily_api_name("H00300.CSI") == "index_daily"
+    # 深市 000 开头仍是个股，不能被误判为指数
+    assert fq.daily_api_name("000333.SZ") == "daily"
+
+
+def test_sync_etf_uses_fund_daily(tmp_path, capsys, monkeypatch):
+    """ETF/LOF 走 fund_daily，入库结构与个股一致。"""
+    fake, calls = _fake_api(daily_rows=[_bar(date.today(), 4.0, pct_chg=0.5)])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+    rc = fq.main(["--codes", "510300.SH,159915.SZ", "--token", "t",
+                  "--store", str(tmp_path / "s"), "--interval", "0"])
+    assert rc == 0
+    assert [c[0] for c in calls] == ["fund_daily", "fund_daily"]
+    assert calls[0][1]["ts_code"] == "510300.SH"
+
+
+def test_sync_index_uses_index_daily(tmp_path, capsys, monkeypatch):
+    """指数走 index_daily；中证系列后缀同样识别。"""
+    fake, calls = _fake_api(daily_rows=[_bar(date.today(), 4000.0, pct_chg=1.0)])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+    rc = fq.main(["--codes", "000300.SH,H00300.CSI", "--token", "t",
+                  "--store", str(tmp_path / "s"), "--interval", "0"])
+    assert rc == 0
+    assert [c[0] for c in calls] == ["index_daily", "index_daily"]
+
+
+def test_snapshot_etf_and_index_skip_daily_basic(tmp_path, capsys, monkeypatch):
+    """ETF/指数没有 daily_basic：只展示价格，不调估值接口。"""
+    fake, calls = _fake_api(daily_rows=[_bar(date.today(), 4.06, pct_chg=-1.12)])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+    rc = fq.main(["--snapshot", "510300.SH,000300.SH", "--token", "t",
+                  "--store", str(tmp_path / "s"), "--interval", "0"])
+    assert rc == 0
+    assert [c[0] for c in calls] == ["fund_daily", "index_daily"]
+    out = capsys.readouterr().out
+    assert out.count("估值字段不可用（daily_basic 仅覆盖 A 股个股") == 2
+
+
+def test_rt_symbol_index_none():
+    """指数不接实时源，避免用个股口径的公开报价造脏K线。"""
+    assert fq._rt_symbol("000300.SH") is None
+    assert fq._rt_symbol("399001.SZ") is None
+    assert fq._rt_symbol("H00300.CSI") is None
+    assert fq._rt_symbol("510300.SH") == "sh510300"   # ETF 仍可实时叠加
 
 
 def test_ts_post_success(monkeypatch):
@@ -257,6 +319,17 @@ def test_ts_post_success(monkeypatch):
     assert body["api_name"] == "daily"
     assert body["token"] == "tok"
     assert body["params"] == {"ts_code": "A.SH"}
+
+
+def test_ts_post_sorts_rows_by_trade_date(monkeypatch):
+    """tushare 日线默认倒序返回 → ts_post 统一升序，保证「末根=最新」成立。"""
+    payload = _api_payload([
+        {"ts_code": "A.SH", "trade_date": "20250103", "close": 3.0},
+        {"ts_code": "A.SH", "trade_date": "20250102", "close": 2.0},
+    ], "ts_code,trade_date,close")
+    monkeypatch.setattr(fq, "_OPENER", _FakeOpener(payload))
+    rows = fq.ts_post("daily", "tok", {}, "ts_code,trade_date,close")
+    assert [r["trade_date"] for r in rows] == ["20250102", "20250103"]
 
 
 def test_ts_post_business_error_permanent(monkeypatch):
@@ -481,6 +554,21 @@ def test_snapshot_pulls_and_writes_back(tmp_path, capsys, monkeypatch):
     assert calls[0][1]["start_date"] == (date.today() - timedelta(days=15)).strftime("%Y%m%d")
     assert fq.store_status(store, "600519.SH") == (2, today.strftime("%Y%m%d"))
     assert "10.50" in capsys.readouterr().out
+
+
+def test_snapshot_takes_latest_bar_from_descending_rows(tmp_path, capsys, monkeypatch):
+    """接口倒序返回（tushare 日线真实行为）→ 仍展示最新一根，而非窗口内最旧一根。"""
+    store = tmp_path / "store"
+    today = date.today()
+    daily = [_bar(today, 10.5), _bar(today - timedelta(days=1), 10.0)]   # 倒序
+    fake, _ = _fake_api(daily_rows=daily, basic_rows=[{"pe_ttm": 15.0, "pb": 1.5}])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+    rc = fq.main(["--snapshot", "600519", "--token", "t",
+                  "--store", str(store), "--interval", "0"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "收盘：10.50" in out
+    assert today.isoformat() in out
 
 
 def test_snapshot_hk_no_basic(tmp_path, capsys, monkeypatch):
@@ -833,7 +921,7 @@ def test_sync_realtime_skips_official_and_hk(tmp_path, capsys, monkeypatch):
     assert rc == 0
     assert called == ["600519.SH"]                 # 正式K线已到 / 港股不参与
     out = capsys.readouterr().out
-    assert "港股暂不支持盘中临时K线" in out
+    assert "港股/指数暂不支持盘中临时K线" in out
     assert "跳过 1 只" in out and "600519.SH" in out
     assert fq.store_status(store, "600519.SH")[1] != today.strftime("%Y%m%d")
 
@@ -912,3 +1000,114 @@ def test_snapshot_realtime_stale_quote_fallback(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "实时报价非今日" in out
     assert "收盘：10.00" in out and "tushare 日线" in out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# --realtime 三态（auto/on/off）：默认 auto 按北京时间 09:30–15:30 窗口自动叠加
+# ─────────────────────────────────────────────────────────────────────────
+
+# 原始实现（autouse fixture 会在每个用例把 fq.rt_auto_window 打桩为「窗口外」，
+# 这里按模块导入时的对象引用保住真身，供边界用例调用）
+_RT_AUTO_WINDOW_ORIG = fq.rt_auto_window
+
+
+def test_rt_auto_window_boundaries():
+    """窗口边界：北京时间 09:30–15:30 内生效、两侧不生效（显式传时，不依赖本地时区）。"""
+    def at(h, m):
+        return _RT_AUTO_WINDOW_ORIG(datetime(2026, 10, 16, h, m))
+
+    assert at(9, 29) is False
+    assert at(9, 30) is True        # 开盘起
+    assert at(11, 30) is True       # 午休也视为窗口内（报价仍是今日）
+    assert at(14, 59) is True       # 尾盘调仓时刻
+    assert at(15, 30) is True       # 收盘后半小时缓冲（正式K线陆续发布期）
+    assert at(15, 31) is False
+    assert at(0, 5) is False
+
+
+def test_sync_realtime_auto_in_window(tmp_path, capsys, monkeypatch):
+    """默认 --realtime auto + 窗口内：不显式传参也自动补今日临时K线（rt=1）。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fq.upsert_store(store, {"600519.SH": [
+        _bar(today - timedelta(days=30 - i), 10.0, pct_chg=0.1) for i in range(30)]})
+    fake, _ = _fake_api(daily_rows=[])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+    monkeypatch.setattr(fq, "rt_auto_window", lambda *a, **k: True)
+
+    def fake_rt(ts_codes):
+        return ({"600519.SH": _live_quote(price=10.5, prev=10.0)}, [])
+
+    monkeypatch.setattr(fq, "fetch_realtime", fake_rt)
+    rc = fq.main(["--codes", "600519.SH", "--token", "t",
+                  "--store", str(store), "--interval", "0"])    # 注意：无 --realtime
+    assert rc == 0
+    assert fq.store_last_bar_is_rt(store, "600519.SH") is True
+    assert "今日临时K线入库：1 只" in capsys.readouterr().out
+
+
+def test_sync_realtime_auto_outside_window_skips(tmp_path, capsys, monkeypatch):
+    """默认 --realtime auto + 窗口外（autouse fixture 钉死）：不抓实时报价并说明；
+    --realtime off 同样关闭。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fq.upsert_store(store, {"600519.SH": [
+        _bar(today - timedelta(days=30 - i), 10.0, pct_chg=0.1) for i in range(30)]})
+    fake, _ = _fake_api(daily_rows=[])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+
+    def boom(ts_codes):
+        raise AssertionError("实时叠加已关闭，不应抓取实时报价")
+
+    monkeypatch.setattr(fq, "fetch_realtime", boom)
+    base = ["--codes", "600519.SH", "--token", "t",
+            "--store", str(store), "--interval", "0"]
+    rc = fq.main(base)                                          # auto + 窗口外
+    assert rc == 0
+    assert fq.store_last_bar_is_rt(store, "600519.SH") is False
+    out = capsys.readouterr().out
+    assert "不在自动实时叠加窗口" in out and "--realtime on" in out
+
+    rc = fq.main(base + ["--realtime", "off"])                  # 显式关闭
+    assert rc == 0
+    assert "已关闭（--realtime off）" in capsys.readouterr().out
+
+
+def test_sync_realtime_on_overrides_window(tmp_path, capsys, monkeypatch):
+    """裸写 --realtime（=on）：窗口外也强制补，兼容旧用法（on 优先于窗口判断）。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fq.upsert_store(store, {"600519.SH": [
+        _bar(today - timedelta(days=30 - i), 10.0, pct_chg=0.1) for i in range(30)]})
+    fake, _ = _fake_api(daily_rows=[])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+
+    def fake_rt(ts_codes):
+        return ({"600519.SH": _live_quote(price=10.5, prev=10.0)}, [])
+
+    monkeypatch.setattr(fq, "fetch_realtime", fake_rt)
+    # autouse fixture 已把窗口钉在「外」，验证 on 直接放行
+    rc = fq.main(["--codes", "600519.SH", "--token", "t",
+                  "--store", str(store), "--interval", "0", "--realtime"])
+    assert rc == 0
+    assert fq.store_last_bar_is_rt(store, "600519.SH") is True
+
+
+def test_snapshot_realtime_auto_outside_window_skips(tmp_path, capsys, monkeypatch):
+    """--snapshot 默认 auto + 窗口外：不抓实时报价，按 tushare 日线展示。"""
+    store = tmp_path / "store"
+    today = date.today()
+    fake, _ = _fake_api(daily_rows=[_bar(today - timedelta(days=1), 10.0, pct_chg=0.0)],
+                        basic_rows=[{"pe_ttm": 19.0}])
+    monkeypatch.setattr(fq, "ts_post_retry", fake)
+
+    def boom(ts_codes):
+        raise AssertionError("实时叠加已关闭，不应抓取实时报价")
+
+    monkeypatch.setattr(fq, "fetch_realtime", boom)
+    rc = fq.main(["--snapshot", "600519", "--token", "t",
+                  "--store", str(store), "--interval", "0"])    # 注意：无 --realtime
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "不在自动实时叠加窗口" in out
+    assert "收盘：10.00" in out and "实时估算" not in out
