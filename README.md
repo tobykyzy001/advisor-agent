@@ -143,6 +143,9 @@ pip install -e ".[dev]"
 # 3. 跑通一次研究（离线也会用内置示例数据演示）
 python -m quantify.cli research 600519 000333
 
+# 3.1 情绪指标择时研究（需 tushare token；先跑 fetch_quotes 落库 510300/000300/511880）
+python -m quantify.cli sentiment --start 2013-01-01
+
 # 4. 以编程方式调用
 python - <<'PY'
 from quantify.agent.orchestrator import InvestAdvisor

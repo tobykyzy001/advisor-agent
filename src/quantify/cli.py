@@ -42,6 +42,19 @@ def main(argv: list[str] | None = None) -> None:
     p_wb.add_argument("--trough-tol", type=float, default=0.03)
     p_wb.add_argument("--ma-window", type=int, default=5)
 
+    p_sent = sub.add_parser("sentiment", help="情绪指标择时研究（基于沪深300ETF，跑分位/事件研究/回测）")
+    p_sent.add_argument("--start", default="2013-01-01", help="评估起点（默认 2013-01-01）")
+    p_sent.add_argument("--end", default=None, help="评估终点（默认今天）")
+    p_sent.add_argument("--store", default="output/quotes-store", help="本地行情库目录")
+    p_sent.add_argument("--cache", default="output/sentiment/cache", help="原始数据缓存目录")
+    p_sent.add_argument("--out", default="output/sentiment", help="报告与明细输出目录")
+    p_sent.add_argument("--token", default=None, help="tushare token（默认环境变量/.env）")
+    p_sent.add_argument("--refresh", action="store_true", help="忽略缓存，重新拉取全部原始数据")
+    p_sent.add_argument("--window", type=int, default=1250, help="滚动分位窗口（交易日，默认 5 年）")
+    p_sent.add_argument("--min-periods", type=int, default=250, help="分位计算最少观测数")
+    p_sent.add_argument("--cost-bps", type=float, default=2.5, help="单边交易成本（bp）")
+    p_sent.add_argument("--horizons", default="20,60,120", help="事件研究前瞻窗口（交易日）")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "research":
@@ -50,6 +63,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_copy(args)
     elif args.cmd == "w-bottom":
         _cmd_w_bottom(args)
+    elif args.cmd == "sentiment":
+        _cmd_sentiment(args)
 
 
 def _cmd_copy(args: argparse.Namespace) -> None:
@@ -91,6 +106,103 @@ def _cmd_w_bottom(args: argparse.Namespace) -> None:
                 "--trough-tol", str(args.trough_tol), "--ma-window", str(args.ma_window)]
     result = subprocess.run(cmd)
     raise SystemExit(result.returncode)
+
+
+def _cmd_sentiment(args: argparse.Namespace) -> None:
+    """情绪指标择时研究：取数 → 指标分位 → 事件研究 → 仓位回测 → 报告。"""
+    import pandas as pd
+
+    from quantify.analysis import sentiment as st
+    from quantify.data import sentiment_data as sd
+    from quantify.data.tushare_client import TushareError, resolve_token
+
+    try:
+        token = resolve_token(args.token)
+    except TushareError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(2) from e
+
+    end = args.end or pd.Timestamp.today().strftime("%Y-%m-%d")
+    start_ts = pd.Timestamp(args.start)
+    warmup_start = (start_ts - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
+
+    console.print(f"[bold]情绪择时研究[/bold] 评估 {args.start} → {end}，"
+                  f"预热起点 {warmup_start}")
+    raw = sd.load_raw_data(token, warmup_start, end, store_dir=args.store,
+                           cache_dir=args.cache, refresh=args.refresh)
+    ind = st.build_indicators(raw, window=args.window, min_periods=args.min_periods)
+
+    eval_mask = ind.index >= start_ts
+    ind_eval = ind.loc[eval_mask]
+    adj_eval = raw.benchmark.loc[eval_mask]
+    cash_eval = raw.cash_ret.reindex(adj_eval.index)
+    if adj_eval.empty:
+        console.print("[red]评估区间内没有基准行情，请检查 --start/--end。[/red]")
+        raise SystemExit(1)
+
+    horizons = tuple(int(x) for x in str(args.horizons).split(",") if x.strip())
+    ev = st.event_study(ind_eval, adj_eval, horizons=horizons)
+
+    heat_pos = st.position_from_heat(ind["heat"])
+    pos_eval = heat_pos.reindex(adj_eval.index)
+    ma_pos = st.ma_position(raw.benchmark).reindex(adj_eval.index)
+
+    results = {
+        "买入持有": st.backtest(adj_eval, cash_eval,
+                             pd.Series(1.0, index=adj_eval.index), args.cost_bps),
+        "均线择时(MA200)": st.backtest(adj_eval, cash_eval, ma_pos, args.cost_bps),
+        "情绪择时": st.backtest(adj_eval, cash_eval, pos_eval, args.cost_bps),
+    }
+    passed, notes = st.judge(results["情绪择时"].stats, results["买入持有"].stats)
+    single = st.single_indicator_backtests(ind_eval, adj_eval, cash_eval, args.cost_bps)
+
+    yearly = pd.DataFrame({
+        name: st.yearly_returns(r.daily["strategy_ret"]) for name, r in results.items()
+    })
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d")
+    ind.to_csv(out / f"indicators_{stamp}.csv", encoding="utf-8-sig")
+    ev.to_csv(out / f"event_study_{stamp}.csv", index=False, encoding="utf-8-sig")
+    results["情绪择时"].daily.to_csv(out / f"backtest_{stamp}.csv", encoding="utf-8-sig")
+    pd.DataFrame([
+        {"indicator": r.name, "start": r.start, "end": r.end,
+         "cagr": r.stats["cagr"], "mdd": r.stats["mdd"],
+         "calmar": r.stats["calmar"], "bench_calmar": r.bench_stats["calmar"],
+         "passed": r.passed}
+        for r in single.values()
+    ]).to_csv(out / f"single_indicator_{stamp}.csv", index=False, encoding="utf-8-sig")
+    report = st.render_report(raw.meta, ind, ev, results, single, yearly,
+                              passed, notes, args.start)
+    report_path = out / f"report_{stamp}.md"
+    report_path.write_text(report, encoding="utf-8")
+
+    table = Table(title="回测结果（510300 前复权，T+1 收盘执行）")
+    for col in ("方案", "年化", "波动", "最大回撤", "Calmar", "Sharpe", "平均仓位"):
+        table.add_column(col)
+    for name, r in results.items():
+        s = r.stats
+        table.add_row(name, f"{s['cagr']:.1%}", f"{s['vol']:.1%}", f"{s['mdd']:.1%}",
+                      f"{s['calmar']:.2f}", f"{s['sharpe']:.2f}", f"{s['exposure']:.0%}")
+    console.print(table)
+
+    single_table = Table(title="单指标择时回测（各自有效样本内）")
+    for col in ("指标", "起点", "年化", "最大回撤", "Calmar", "同期基准Calmar", "判定"):
+        single_table.add_column(col)
+    for r in single.values():
+        single_table.add_row(
+            st.INDICATOR_LABELS.get(r.name, r.name), r.start,
+            f"{r.stats['cagr']:.1%}", f"{r.stats['mdd']:.1%}",
+            f"{r.stats['calmar']:.2f}", f"{r.bench_stats['calmar']:.2f}",
+            "通过" if r.passed else "未通过",
+        )
+    console.print(single_table)
+
+    console.print(f"\n{'[green]判定：通过[/green]' if passed else '[yellow]判定：未通过[/yellow]'}")
+    for n in notes:
+        console.print(f"  - {n}")
+    console.print(f"\n报告与明细：{report_path}")
 
 
 def _cmd_research(args: argparse.Namespace) -> None:
