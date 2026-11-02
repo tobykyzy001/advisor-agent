@@ -94,6 +94,25 @@
 #   红利腿固定 30% 每周再平衡（漂移<2%不动;ETF 免印花税/佣金万1/滑点万5）。
 #   人能执行的回撤管理,替代波动目标（机械缩放人跟不上）;预计收益打七折、回撤打六折,
 #   与 v2.9 ORACLE（+1337.91%/DD65.54%）同引擎同名单对照,只有宽度与哑铃两个变量。
+# v2.12（2026-11-01，池级广度闸，用户提案）：BREADTH_GATE_DEF=True——全 A 清洗池中
+#   正动量股（技能仿真口径 mom120>0）占比 < 20% → 股票仓敞口乘数降到 30%（经
+#   slot_value 链路与波动目标同管道）。动机：技能版「冻结=老仓原样全保留」=永不减仓,
+#   v3/v2.3 的滞后二值阀已证伪（v3 死于 2019 V反踏空），池级广度是 10.7 结论列出的
+#   唯一未试择时形式——横截面同步数据、无滞后。与冻结语义的关键区别：排名轮出照常
+#   跑、新买照常放行，闸只缩敞口（冻结周也照减）。对照基准 = v2.11（10.13：
+#   +1105.18%/DD 22.57%），BREADTH_GATE_DEF=False 即复原。
+#   ※ 10.14 实测证伪：+954.62%/DD 24.25%，全面劣于 v2.11，已入勿再试清单。
+# v2.13（2026-11-02，指数价格分位闸，用户提案：2/4/8/16 周价格分位判整体趋势）：
+#   PCTILE_GATE_DEF=True——中证全指收盘价在 2/4/8/16 周（10/20/40/80 交易日）窗口
+#   [min,max] 的位置分位取均值，股票敞口乘数 = max(0.3, 分位均值)，连续量无跳变。
+#   与 mom 符号类（v3/v2.3/v2.12 全灭）机制不同：区间归一化下恐慌低点钉在窗口下限，
+#   V 反时分位随价格立即回升，无「解冻时滞」。v2.12 广度闸默认关（留档），
+#   唯一变量 vs v2.11 即此闸；对照基准仍为 10.13（+1105.18%/DD 22.57%）。
+#   ※ 10.16 全线封盘：PCTILE_GATE_DEF 默认 False，v2.14a~d 单窗消融无一过 IR 1.514。
+# v2.15（2026-11-02，冻结关消融，补 G3/G4 缺口，用户提案）：择时阀门封盘后唯一没测
+#   过的对照——大盘状态关（技能仿真=代表团池内 mom60 中位数≤-5% 冻结新开仓）本身
+#   的增量。USE_MARKET_GUARD_DEF=False：冻结从不触发、每周照常选股换仓，单变量
+#   对照 v2.11（BREADTH/PCTILE 两闸已默认关，配置即 v2.15）。
 #
 # 仅供研究参考，不构成投资建议。
 
@@ -131,7 +150,8 @@ IND_LEVEL_DEF = 'sw_l3'          # 行业粒度（2026-10-12 用户提案上三�
 SIMULATE_SKILL_DEF = True   # True = 完全复刻现行技能规则（此时下方 skip_vol/除波动/跳月、
                             # score>0 闸、波动目标、keep 缓冲比 全部失效，改用技能口径）：
                             #   · 快慢双榜：mom20 快榜 / mom120 慢榜（原始区间涨幅,不跳月不除波动）
-                            #   · 五步法：老仓任一榜前 16 保留 → 快4 → 慢4 → 快续扫 → 慢续扫至 8 仓
+                            #   · 五步法：老仓任一榜前 keep_rank 保留 → 快半 → 慢半 → 快续扫 →
+                            #     慢续扫至 N 仓（现技能默认 N=16/keep24；v2.8 制定时技能为 8 仓）
                             #   · 大盘状态：代表团池内 mom60 中位数 ±5%（不用指数）
                             #   · 趋势/反追高闸同原版；退出纯排名滚动
                             #   代表团池（三级行业 top4 × 每行业 mom120 前 4）充当「人工观察仓
@@ -182,10 +202,31 @@ DEFENSIVE_WEIGHT_DEF = 0.30           # 防守腿固定权重（30%）；股票�
                                       # 每周随调仓再平衡回原比例（漂移<总资产2%不动）；
                                       # 0 = 关闭哑铃,全部资金投入股票仓
 
+# —— 池级广度闸（v2.12，用户提案 2026-11-01：冻结态无退出的替代阀门）——
+BREADTH_GATE_DEF = False       # 池级广度闸（v2.13 起默认关闭：10.14 已实测证伪——
+                               # 回撤 24.25% vs 22.57%、收益 −150pp，仅留档可复跑）：
+                               # 全 A 清洗池中正动量股占比低于阈值 → 股票仓敞口乘数
+                               # 降到 BREADTH_MIN_EXPO（经 slot_value 链路）。
+BREADTH_THRESHOLD_DEF = 0.20   # 正动量占比阈值（20%），低于此视为系统性下行
+BREADTH_MIN_EXPO_DEF = 0.3     # 触发后股票敞口乘数（30%；1.0=此闸名义化）
+                               # 广度口径：技能仿真用 mom120>0（与慢榜排名同源），
+                               # 其余模式用 score>0（10.7 原提案口径）
+
+# —— 指数价格分位闸（v2.13，用户提案 2026-11-02：多窗口价格分位判整体趋势）——
+PCTILE_GATE_DEF = False        # v2.14 单窗消融×4 后全线封盘（10.16：价格系择时阀门三族
+                               # 8 组全灭，无一过 IR 1.514 标准）：默认关闭回到 v2.11
+                               # 生产基线，True 可复跑（窗口消融点见 rebalance 内
+                               # `for w in (10, 20, 40, 80):` 注释处）
+# （机制存档：中证全指收盘价在 2/4/8/16 周窗口 [min,max] 位置分位取均值，
+#  股票敞口乘数 = max(PCTILE_FLOOR_DEF, 分位均值)——连续量、无跳变）
+PCTILE_FLOOR_DEF = 0.3         # 敞口下限（最低打到 30%；1.0=此闸名义化）
+
 # —— 闸门（只管新买入；老仓留存只看排名）——
 USE_TREND_FILTER_DEF = True
 USE_ANTI_CHASE_DEF = True
-USE_MARKET_GUARD_DEF = True
+USE_MARKET_GUARD_DEF = True    # 冻结关默认开（与生产技能语义一致）。v2.15 已实测消融
+                               # （10.17：OFF ≈ 全面略好但差距在噪声量级——冻结关是
+                               # 近零期望值的行为件，不是风控支柱）；False 可复跑消融组
 MARKET_INDEX_DEF = '000985.XSHG'
 GUARD_WIN_DEF = 60
 # 阈值与动作（v2.4 起复原 v2.2 基线语义 -0.05 + 'hold'；v2.3 全退版已测 −19.50%，见 10.8）
@@ -261,6 +302,15 @@ def initialize(context):
             g.use_vol_target = False              # v2.10 起可经 SKILL_VOL_TARGET_DEF 打开
     g.defensive_asset = DEFENSIVE_ASSET_DEF       # 哑铃防守腿（v2.11）：红利ETF
     g.defensive_weight = DEFENSIVE_WEIGHT_DEF     # 防守腿固定权重（0=关闭）
+    g.breadth_gate = BREADTH_GATE_DEF             # 池级广度闸（v2.12）
+    g.breadth_threshold = BREADTH_THRESHOLD_DEF
+    g.breadth_min_expo = BREADTH_MIN_EXPO_DEF
+    g.breadth = 1.0            # 当前正动量占比（仅显示/记录）
+    g.breadth_scale = 1.0      # 广度闸敞口乘数（≤1，作用与 vol_scale 同管道）
+    g.pctile_gate = PCTILE_GATE_DEF             # 指数价格分位闸（v2.13）
+    g.pctile_floor = PCTILE_FLOOR_DEF
+    g.pctile = None            # 当前分位均值（仅显示/记录）
+    g.pctile_scale = 1.0       # 分位闸敞口乘数（floor~1，与 vol_scale 同管道）
     g.oracle_enabled = ORACLE_ENABLED_DEF         # 上帝视角诊断组：行业集按年份查表
     g.oracle_industries = ORACLE_INDUSTRIES_DEF
     g.oracle_year = None
@@ -518,8 +568,8 @@ def skill_build_target(pool, current):
     """现行技能五步法：过滤(合格) → 快榜(mom20)/慢榜(mom120)双轨排名 →
     老仓任一榜前 keep_rank 保留 → 快半 → 慢半 → 快续扫 → 慢续扫至 top_n 仓。
 
-    keep_rank/top_n 参数化（v2.11 起支持 N=16：half=8、keep=24）；
-    N=8 时严格等同现行技能（keep16、快4慢4）。"""
+    keep_rank/top_n 参数化：N=16（half=8、keep=24）= 现行技能默认
+    （2026-11 生产技能宽度 8→16 升级后）；N=8（keep16、快4慢4）为旧默认。"""
     half = max(1, g.top_n // 2)
     q = [x for x in pool if x['entry_ok']
          and np.isfinite(x.get('mom20', np.nan))
@@ -580,6 +630,41 @@ def rebalance(context):
     scored = []
     for i in range(0, len(universe), g.batch_size):
         scored.extend(score_batch(context, universe[i:i + g.batch_size]))
+
+    # 1a-bis. 池级广度（v2.12）：全体打分票中正动量占比——横截面同步数据、无滞后。
+    # 取数异常/有效票过少时 fail-open（敞口不缩，如实日志），绝不静默改池。
+    if g.breadth_gate:
+        bkey = 'mom120' if g.simulate_skill else 'score'
+        bvals = [x[bkey] for x in scored if np.isfinite(x.get(bkey, np.nan))]
+        if len(bvals) < 200:
+            g.breadth, g.breadth_scale = None, 1.0
+            log.info('  广度闸：有效打分票不足(%d)，本周失效（fail-open）' % len(bvals))
+        else:
+            g.breadth = float(np.mean([1.0 if v > 0 else 0.0 for v in bvals]))
+            g.breadth_scale = g.breadth_min_expo if g.breadth < g.breadth_threshold else 1.0
+
+    # 1a-ter. 指数价格分位闸（v2.13）：中证全指 2/4/8/16 周区间位置分位均值 →
+    # 敞口连续缩放（下限 floor）。取数失败/长度不足 fail-open（不缩，如实日志）。
+    if g.pctile_gate:
+        try:
+            idx = attribute_history(g.market_index, 81, '1d', ['close'],
+                                    fq=None, skip_paused=True, df=True)
+            closes = idx['close'].values if idx is not None else None
+            if closes is None or len(closes) < 81:
+                raise ValueError('len=%s' % (0 if closes is None else len(closes)))
+            parts = []
+            # v2.14 单窗口消融（用户指正 2026-11-02：四窗均值揉了四个变量，不合单变量
+            # 纪律）：依次改为 (10,)/(20,)/(40,)/(80,) 各跑一组 v2.14a~d（=2/4/8/16 周），
+            # 映射与 v2.13 直通一致以隔离窗口变量；四窗均值 = v2.13 本体
+            for w in (10, 20, 40, 80):
+                seg = closes[-w:]
+                lo, hi = float(np.min(seg)), float(np.max(seg))
+                parts.append((float(closes[-1]) - lo) / (hi - lo) if hi > lo else 1.0)
+            g.pctile = float(np.mean(parts))
+            g.pctile_scale = max(g.pctile_floor, g.pctile)
+        except Exception as e:
+            g.pctile, g.pctile_scale = None, 1.0
+            log.info('  分位闸：指数取数失败（%s），本周失效（fail-open）' % e)
 
     # 1b. 行业前置：行业集按月刷新（每月首周重排，月内不动；个股行业归属每周仍然新取）。
     # 「行业池为空」两种成因分开（v3 实测教训）：取数失败 → fail-closed 保留老仓；
@@ -666,7 +751,9 @@ def rebalance(context):
     # 2. 大盘状态关：技能仿真=代表团池内 mom60 中位数≤-5%（技能原口径）；
     #    其他版本=中证全指 mom60 ≤ GUARD_DOWN
     if g.simulate_skill:
-        frozen = skill_regime_down(pool)
+        # v2.15：技能仿真分支原本不查 use_guard（冻结无条件生效）；
+        # 补上判断后 USE_MARKET_GUARD_DEF=False 才能真正消融冻结关
+        frozen = skill_regime_down(pool) if g.use_guard else False
     else:
         frozen = market_guard_down(context)
 
@@ -690,7 +777,7 @@ def rebalance(context):
 
     if g.simulate_skill:
         # 技能仿真（v2.8）：冻结/池数据故障 → 老仓原样保留不开新仓；
-        # 否则走技能五步法（skill_build_target：老仓 buffer16 → 快4 → 慢4 → 快续扫 → 慢续扫）
+        # 否则走技能五步法（skill_build_target：老仓 buffer 保留 → 快半 → 慢半 → 快续扫 → 慢续扫）
         if frozen or (not pool and (not g.use_industry_filter or ind_fail)):
             target = list(current)
         else:
@@ -761,7 +848,8 @@ def rebalance(context):
     # 哑铃（v2.11）：股票组合只拿到 (1 - defensive_weight) 的资金，
     # 其余 defensive_weight 比例每周再平衡到红利ETF（见下方防守腿订单）
     equity_share = 1.0 - g.defensive_weight
-    slot_value = total_value * weight * g.vol_scale * equity_share
+    slot_value = total_value * weight * g.vol_scale * g.breadth_scale \
+        * g.pctile_scale * equity_share
 
     def can_open(c):
         return buyable(c) and slot_value >= 100 * cd[c].last_price
@@ -833,6 +921,12 @@ def rebalance(context):
     status = ('冻结全退' if g.guard_mode == 'exit' else '冻结保留') if frozen else '正常'
     if g.use_vol_target:
         status += ' 敞口%.0f%%' % (g.vol_scale * 100)
+    if g.breadth_gate and g.breadth is not None:
+        status += ' 广度%.0f%%%s' % (g.breadth * 100,
+                                     '→%.0f%%' % (g.breadth_scale * 100) if g.breadth_scale < 1.0 else '')
+    if g.pctile_gate and g.pctile is not None:
+        status += ' 分位%.0f%%%s' % (g.pctile * 100,
+                                     '→%.0f%%' % (g.pctile_scale * 100) if g.pctile_scale < 1.0 else '')
     log.info('%s 行业[%s] 池%d(全A%d) 目标%d/%d %s | %s %s' % (
         today, ind_txt, len(pool), len(scored), len(target), n_target, status,
         tail_label, top5))
@@ -846,4 +940,6 @@ def rebalance(context):
         log.info('  买不进: %s' % ' '.join(buy_skipped))
     n_held = sum(1 for p in context.portfolio.positions.values() if p.total_amount > 0)
     record(持仓数=n_held, 冻结=int(frozen), 池内=float(len(pool)),
-           敞口=float(g.vol_scale))
+           敞口=float(g.vol_scale),
+           广度=float(g.breadth) if (g.breadth_gate and g.breadth is not None) else 1.0,
+           分位=float(g.pctile) if (g.pctile_gate and g.pctile is not None) else 1.0)

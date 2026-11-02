@@ -253,7 +253,7 @@ def test_market_regime_no_history():
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 双轨排名 + buffer16 + 快4慢4 补仓
+# 双轨排名 + buffer24 + 快8慢8 补仓（宽度默认 8→16，2026-11-02 起）
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -279,44 +279,52 @@ def test_rank_ties_by_ticker():
     assert rs["B.SH"] == 3
 
 
-def test_build_target_fast4_slow4():
-    """8 只合格：应按快4 + 慢4 补满（无老仓）。"""
+def test_build_target_fast8_slow8():
+    """16 只合格：应按快8 + 慢8 补满（无老仓）。"""
     decs = [
-        # 快榜强者（mom20 大）：F1~F5
+        # 快榜强者（mom20 大）：F1~F8
         _mk_decision("F1.SH", 0.50, 0.02),
         _mk_decision("F2.SH", 0.45, 0.03),
         _mk_decision("F3.SH", 0.40, 0.01),
         _mk_decision("F4.SH", 0.35, 0.04),
-        # 慢榜强者（mom120 大）：S1..S4
-        _mk_decision("S1.SH", 0.01, 0.90),
-        _mk_decision("S2.SH", 0.02, 0.80),
-        _mk_decision("S3.SH", 0.03, 0.70),
-        _mk_decision("S4.SH", 0.04, 0.60),
+        _mk_decision("F5.SH", 0.30, 0.05),
+        _mk_decision("F6.SH", 0.25, 0.06),
+        _mk_decision("F7.SH", 0.20, 0.07),
+        _mk_decision("F8.SH", 0.15, 0.08),
+        # 慢榜强者（mom120 大）：S1..S8
+        _mk_decision("S1.SH", 0.08, 0.90),
+        _mk_decision("S2.SH", 0.07, 0.85),
+        _mk_decision("S3.SH", 0.06, 0.80),
+        _mk_decision("S4.SH", 0.05, 0.75),
+        _mk_decision("S5.SH", 0.04, 0.70),
+        _mk_decision("S6.SH", 0.03, 0.65),
+        _mk_decision("S7.SH", 0.02, 0.60),
+        _mk_decision("S8.SH", 0.01, 0.55),
     ]
     target = build_target(decs, set(), StrategyParams())
-    # 8 只全选
-    assert len(target) == 8
-    # 前4 = 快榜 F1..F4；后4 = 慢榜 S1..S4
-    assert target[:4] == ["F1.SH", "F2.SH", "F3.SH", "F4.SH"]
-    assert target[4:] == ["S1.SH", "S2.SH", "S3.SH", "S4.SH"]
+    # 16 只全选
+    assert len(target) == 16
+    # 前8 = 快榜 F1..F8；后8 = 慢榜 S1..S8
+    assert target[:8] == [f"F{i}.SH" for i in range(1, 9)]
+    assert target[8:] == [f"S{i}.SH" for i in range(1, 9)]
 
 
 def test_build_target_buffer_keeps_old():
-    """老仓排名第 15（≤16）应被保留，即便不在前 8。"""
+    """老仓排名第 14（≤24）应被保留，即便不在前 16。"""
     decs = [_mk_decision(f"T{i:02d}.SH", 0.9 - i * 0.01, 0.9 - i * 0.01) for i in range(20)]
-    # T00（0.90）最强，T13（0.77）第 14 名，仍在 buffer 16 内
+    # T00（0.90）最强，T13（0.77）第 14 名，仍在 buffer 24 内
     current = {"T13.SH"}
     target = build_target(decs, current, StrategyParams())
     assert "T13.SH" in target
-    assert len(target) == 8
+    assert len(target) == 16
 
 
 def test_build_target_buffer_drops_deep_old():
-    """老仓落到第 17 名（>16）不入前两榜缓冲 → 被换掉。"""
-    decs = [_mk_decision(f"T{i:02d}.SH", 0.9 - i * 0.01, 0.9 - i * 0.01) for i in range(20)]
-    current = {"T17.SH"}  # 第 18 名，超 buffer16
+    """老仓落到第 28 名（>24）不入前两榜缓冲 → 被换掉。"""
+    decs = [_mk_decision(f"T{i:02d}.SH", 0.9 - i * 0.01, 0.9 - i * 0.01) for i in range(30)]
+    current = {"T27.SH"}  # 第 28 名，超 buffer24
     target = build_target(decs, current, StrategyParams())
-    assert "T17.SH" not in target
+    assert "T27.SH" not in target
 
 
 def test_build_target_empty_pool():

@@ -43,17 +43,19 @@
      - 数据关：过滤后无合格标的则按兜底规则处理
   第二步 双轨排名：对合格股票分别按 mom20 降序排快榜、按 mom120 降序排慢榜
      （同分按 ts_code 字典序，保证确定）。
-  第三步 老仓优先（buffer16）：现有持仓只要在快榜或慢榜任一榜中仍居前 16，直接保留。
-  第四步 补满 8 仓：老仓保留完未满 8 只，按「快榜前 4 → 慢榜前 4 → 快榜续扫 → 慢榜续扫」
-     顺序补位，去重，直到凑满 max_positions=8 只（等权，每只 1/8=12.5%）。
+  第三步 老仓优先（buffer24）：现有持仓只要在快榜或慢榜任一榜中仍居前 24，直接保留。
+  第四步 补满 16 仓：老仓保留完未满 16 只，按「快榜前 8 → 慢榜前 8 → 快榜续扫 → 慢榜续扫」
+     顺序补位，去重，直到凑满 max_positions=16 只（等权，每只 1/16=6.25%）。
+     （宽度 8→16 源自聚宽同引擎消融 v2.11 实测归因，见 docs/stock_momentum_joinquant.md
+     10.13：宽度 8→16 贡献了 2022-2024 的分散收益，与哑铃并列回撤控制主力）
   第五步 兜底：无合格标的时——有老仓则继续持有老仓（参数 keep_on_empty=True，
      可改 False 切「全部退现金」），无老仓则空仓退出（100% 现金）。
 
 持仓约束：
   - 等权：单一标的权重 = 1 / max_positions。
   - 退出机制：**纯滚动**。持仓期间没有任何价格型止损在跑——股票跌出快/慢榜前
-    buffer_rank（16）名缓冲 → 下次调仓被移出目标组合 → 生成 zero_out 清仓单。
-    跌破 MA120 只是失去「新买入资格」，已持仓的仍靠前 16 名缓冲决定去留。
+    buffer_rank（24）名缓冲 → 下次调仓被移出目标组合 → 生成 zero_out 清仓单。
+    跌破 MA120 只是失去「新买入资格」，已持仓的仍靠前 24 名缓冲决定去留。
   - 流动性：单票下单量 ≤ 信号日成交量 × max_trade_vol_ratio（默认 10%）。
   - 节奏：信号日（T）收盘算信号，按 T 日收盘价成交；回滚开关见 STRATEGY_MOMENTUM_DECISION_MODE。
 
@@ -155,10 +157,13 @@ class StrategyParams:
     rush_window: int = 5           # 反追高：近 N 日
     market_up: float = 0.05        # 大盘上行阈值（mom60 中位数 ≥ +5%）
     market_down: float = -0.05     # 大盘下行阈值（mom60 中位数 ≤ -5%）
-    buffer_rank: int = 16          # 老仓粘性：快/慢任一榜前 16 保留
-    max_positions: int = 8         # 最大持仓数（等权）
-    fast_top: int = 4              # 补仓：快榜前 N
-    slow_top: int = 4              # 补仓：慢榜前 N
+    buffer_rank: int = 24          # 老仓粘性：快/慢任一榜前 24 保留（=1.5N 随宽度联动）
+    max_positions: int = 16        # 最大持仓数（等权；2026-11-02 起 8→16，
+                                   # 聚宽同引擎消融 v2.11 实测：宽度 16 贡献分散收益，
+                                   # 回撤 65.54%→22.57% 的归因件之一，见
+                                   # docs/stock_momentum_joinquant.md 10.13）
+    fast_top: int = 8              # 补仓：快榜前 N（=max_positions/2）
+    slow_top: int = 8              # 补仓：慢榜前 N（=max_positions/2）
     max_trade_vol_ratio: float = 0.10  # 流动性：单票下单量 ≤ 信号日成交量 × 10%
     coverage_min: float = 0.95     # 覆盖率下限（低于则 fail-closed 不出信号）
     history_min: int = 121         # 每只股票最低历史交易日（mom120+1 可用）
@@ -722,7 +727,7 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
         target = sorted(current)
         signal = "frozen"
     else:
-        # 上行/震荡：正常跑四步选股（老仓 buffer16 优先 → 快4慢4补满到 8）
+        # 上行/震荡：正常跑四步选股（老仓 buffer24 优先 → 快8慢8补满到 16）
         target = build_target(decisions, current, p)
         signal = "signal"
         # 第五步兜底：过滤完一只合格标的都没有时，有老仓则继续持有老仓，无则空仓
@@ -788,7 +793,7 @@ def _run(watchlist_path: Path, state_path: Path | None, p: StrategyParams,
                 f"{d.mom120:.1%} | {d.close:.2f} | {tag} |"
             )
         lines.append("")
-        lines.append("> 持仓期间无价格止损，退出靠排名跌出前 16 名缓冲被动滚动（zero_out）。")
+        lines.append("> 持仓期间无价格止损，退出靠排名跌出前 24 名缓冲被动滚动（zero_out）。")
         lines.append("")
     else:
         lines.append("")
@@ -899,7 +904,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="本地 CSV 行情库目录（默认 output/quotes-store，"
                          "由 fetch_quotes.py 刷库写回，本脚本只读）")
     ap.add_argument("--state", default=None, help="持仓状态 JSON 路径（默认同名 .state.json）")
-    ap.add_argument("--max-positions", type=int, default=8)
+    ap.add_argument("--max-positions", type=int, default=16)
     ap.add_argument("--win-short", type=int, default=20)
     ap.add_argument("--win-mid", type=int, default=120)
     ap.add_argument("--win-market", type=int, default=60)
@@ -907,9 +912,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rush-max", type=float, default=0.24)
     ap.add_argument("--market-up", type=float, default=0.05)
     ap.add_argument("--market-down", type=float, default=-0.05)
-    ap.add_argument("--buffer-rank", type=int, default=16)
-    ap.add_argument("--fast-top", type=int, default=4)
-    ap.add_argument("--slow-top", type=int, default=4)
+    ap.add_argument("--buffer-rank", type=int, default=24)
+    ap.add_argument("--fast-top", type=int, default=8)
+    ap.add_argument("--slow-top", type=int, default=8)
     ap.add_argument("--max-trade-vol-ratio", type=float, default=0.10)
     ap.add_argument("--coverage-min", type=float, default=0.95)
     ap.add_argument("--history-min", type=int, default=121)
