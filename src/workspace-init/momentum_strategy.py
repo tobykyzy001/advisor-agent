@@ -28,13 +28,14 @@
   真实收盘价）。行情库缺 pct_chg 列或链路中断（任何一行缺值）→ 该标的
   fail-closed 剔除并提示先刷库，不拿不复权价凑合计算。
 
-大盘状态（fail-closed 的市场过滤器）：
+大盘状态（展示 + 可选的市场过滤器）：
   取池内全部股票 mom60 的「中位数」：
-    中位数 ≥ +5%  → 上行（正常开仓）
-    中位数 ≤ -5%  → 下行（冻结新增，已有持仓原样保留）
-    之间          → 震荡（正常开仓）
-  可用 --market-guard false 临时关闭此关：下行状态下也照常选股出组合——
-  大盘状态仍会照常计算并写进报告/状态，供人工判断风险（默认 true 开启）。
+    中位数 ≥ +5%  → 上行    中位数 ≤ -5%  → 下行    之间 → 震荡
+  默认关闭（--market-guard 默认 false）：下行状态下也照常选股出组合，
+  大盘状态仍会照常计算并写进报告/状态，供人工判断风险；
+  --market-guard true 开启冻结：下行时冻结新增、已有持仓原样保留。
+  （默认值 2026-11-02 开→关：聚宽 v2.15 消融实测该关期望值 ≈ 0、
+  方向微弱为负，见 docs/stock_momentum_joinquant.md 10.17）
 
 选股顺序：
   第一步 过滤（三道关全过才算「合格」）：
@@ -168,7 +169,8 @@ class StrategyParams:
     coverage_min: float = 0.95     # 覆盖率下限（低于则 fail-closed 不出信号）
     history_min: int = 121         # 每只股票最低历史交易日（mom120+1 可用）
     hold_on_empty: bool = True     # 兜底：无合格标的时是否继续持有老仓（False=全退现金）
-    market_guard: bool = True      # 大盘状态关开关：False 时下行也照常选股（状态仍照常计算展示）
+    market_guard: bool = False     # 大盘状态关开关：默认关（v2.15 实测期望值≈0、
+                                   # 方向微弱为负）；True 时下行冻结新增、老仓原样保留
 
 
 @dataclass
@@ -919,8 +921,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--coverage-min", type=float, default=0.95)
     ap.add_argument("--history-min", type=int, default=121)
     ap.add_argument("--hold-on-empty", choices=["true", "false"], default="true")
-    ap.add_argument("--market-guard", choices=["true", "false"], default="true",
-                    help="大盘状态关开关：false 时即使大盘下行也照常选股出组合（默认 true 开启）")
+    ap.add_argument("--market-guard", choices=["true", "false"], default="false",
+                    help="大盘状态关开关：默认 false 关闭（下行也照常选股，状态照常计算展示）；"
+                         "true 时下行冻结新增、老仓原样保留（v2.15 实测该关期望值≈0）")
     args = ap.parse_args(argv)
 
     # 一键回滚/降级开关（环境变量 STRATEGY_MOMENTUM_DECISION_MODE=decision_runs）：

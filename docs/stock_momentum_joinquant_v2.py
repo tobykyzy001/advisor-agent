@@ -224,9 +224,9 @@ PCTILE_FLOOR_DEF = 0.3         # 敞口下限（最低打到 30%；1.0=此闸名
 # —— 闸门（只管新买入；老仓留存只看排名）——
 USE_TREND_FILTER_DEF = True
 USE_ANTI_CHASE_DEF = True
-USE_MARKET_GUARD_DEF = True    # 冻结关默认开（与生产技能语义一致）。v2.15 已实测消融
-                               # （10.17：OFF ≈ 全面略好但差距在噪声量级——冻结关是
-                               # 近零期望值的行为件，不是风控支柱）；False 可复跑消融组
+USE_MARKET_GUARD_DEF = False   # 冻结关默认关（2026-11-03 起，与生产技能新默认一致：
+                               # v2.15 消融实测期望值≈0、方向微弱为负，见 10.17——
+                               # 凡实测无增量的开关按纪律默认关）；True 复原旧语义
 MARKET_INDEX_DEF = '000985.XSHG'
 GUARD_WIN_DEF = 60
 # 阈值与动作（v2.4 起复原 v2.2 基线语义 -0.05 + 'hold'；v2.3 全退版已测 −19.50%，见 10.8）

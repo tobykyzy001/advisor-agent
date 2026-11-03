@@ -432,24 +432,24 @@ def _run_strategy(tmp_path, extra_args: list[str]):
     return rc, json.loads(state.read_text(encoding="utf-8"))
 
 
-def test_market_guard_default_freezes_on_down(tmp_path, capsys):
-    """默认开启：大盘下行 → signal=frozen，目标持仓只剩老仓，不新增。"""
+def test_market_guard_default_runs_on_down(tmp_path):
+    """默认关闭（2026-11 起）：大盘仍判 down 并照常展示，但照常选股出新组合。"""
     rc, state = _run_strategy(tmp_path, [])
+    assert rc == 0
+    assert state["regime"] == "down"          # 状态照常计算展示
+    assert state["signal"] == "signal"
+    assert set(state["target"]) == {"N1.SH", "N2.SH", "OLD.SH"}
+
+
+def test_market_guard_on_freezes_on_down(tmp_path, capsys):
+    """--market-guard true：大盘下行 → signal=frozen，目标持仓只剩老仓，不新增。"""
+    rc, state = _run_strategy(tmp_path, ["--market-guard", "true"])
     assert rc == 0
     assert state["regime"] == "down"          # 前提：行情确属下行
     assert state["signal"] == "frozen"
     assert state["target"] == ["OLD.SH"]      # 冻结新增，老仓原样保留
     out = capsys.readouterr().out
     assert "与上期目标持仓一致" in out        # 冻结无变动：摘要明示本次无调仓
-
-
-def test_market_guard_off_runs_on_down(tmp_path):
-    """--market-guard false：大盘仍判 down，但照常选股出新组合（老仓缓冲照常生效）。"""
-    rc, state = _run_strategy(tmp_path, ["--market-guard", "false"])
-    assert rc == 0
-    assert state["regime"] == "down"          # 状态照常计算展示
-    assert state["signal"] == "signal"
-    assert set(state["target"]) == {"N1.SH", "N2.SH", "OLD.SH"}
 
 
 # ─────────────────────────────────────────────────────────────────────────
