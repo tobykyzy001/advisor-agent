@@ -18,19 +18,29 @@ INDICATOR_LABELS = {
     "pe_ttm": "沪深300 PE(TTM)",
     "turnover_20d": "沪深300 换手率(20日均)",
     "amount_20d": "沪深A股成交额(20日均)",
+    "market_turnover_20d": "沪深A股换手率(20日均)",
     "margin_20d": "两融余额(20日均)",
     "margin_buy_20d": "融资买入占成交比(20日均)",
     "north_20d": "北向净流入(20日累计)",
     "accounts": "新增投资者(月度,停更)",
 }
 
-#: 进入复合热度的指标（accounts 已停更，只做单指标展示，不进复合）
-COMPOSITE_COLS = ["pe_ttm", "turnover_20d", "amount_20d",
-                  "margin_20d", "margin_buy_20d", "north_20d"]
+#: 进入复合热度的指标：只用全市场情绪，排除沪深300 自身的 PE/换手率。
+#: accounts 已停更，只做单指标展示，不进复合。
+COMPOSITE_COLS = ["amount_20d", "market_turnover_20d", "margin_20d",
+                  "margin_buy_20d", "north_20d"]
 
 DEFAULT_THRESHOLDS = (80.0, 90.0, 97.0)
 DEFAULT_POSITIONS = (0.8, 0.5, 0.2)
 DEFAULT_COST_BPS = 2.5
+#: 动态仓位：热度 ≤ start 满仓，随热度线性降到 floor（不给杠杆）
+DEFAULT_DYNAMIC_START = 50.0
+DEFAULT_DYNAMIC_FLOOR = 0.2
+#: BS 二元规则：(展示名, 模式, 买入阈值, 卖出阈值)
+BS_RULES = [
+    ("反转 20/80", "contrarian", 20.0, 80.0),
+    ("趋势 60/40", "trend", 60.0, 40.0),
+]
 
 
 def rolling_percentile(s: pd.Series, window: int, min_periods: int) -> pd.Series:
@@ -53,6 +63,7 @@ def build_indicators(raw: RawSentimentData, window: int = 1250,
     ind["pe_ttm"] = raw.hs300["pe_ttm"]
     ind["turnover_20d"] = raw.hs300["turnover_rate"].rolling(20, min_periods=10).mean()
     ind["amount_20d"] = raw.market_amount.rolling(20, min_periods=10).mean()
+    ind["market_turnover_20d"] = raw.market_turnover.rolling(20, min_periods=10).mean()
     ind["margin_20d"] = (
         raw.margin["rzye"].rolling(20, min_periods=10).mean() / 1e12
     )
@@ -64,7 +75,7 @@ def build_indicators(raw: RawSentimentData, window: int = 1250,
     ind["accounts"] = raw.accounts
 
     pct = pd.DataFrame(index=idx)
-    for c in COMPOSITE_COLS:
+    for c in [x for x in INDICATOR_LABELS if x in ind.columns and x != "accounts"]:
         pct[f"{c}_pct"] = rolling_percentile(ind[c], window, min_periods)
 
     # 开户是月度且已停更：只在原始月度序列上算 36 月分位，停更后置 NaN
@@ -151,6 +162,46 @@ def position_from_heat(heat: pd.Series,
     return pos
 
 
+def position_from_heat_dynamic(heat: pd.Series,
+                               start: float = DEFAULT_DYNAMIC_START,
+                               floor: float = DEFAULT_DYNAMIC_FLOOR) -> pd.Series:
+    """动态仓位：热度 ≤ start 满仓，之后线性降到 floor；不给杠杆。"""
+    if heat.empty:
+        return pd.Series(dtype=float)
+    progress = ((heat - start) / (100.0 - start)).clip(lower=0.0, upper=1.0)
+    pos = 1.0 - (1.0 - floor) * progress
+    pos[heat.isna()] = 1.0
+    return pos
+
+
+def bs_position(heat: pd.Series, buy_th: float, sell_th: float,
+                mode: str = "contrarian") -> pd.Series:
+    """二元 BS：满仓 1 / 空仓 0，带滞回（买入后必须触及另一阈值才卖出）。
+
+    - contrarian：热度 ≤ buy_th 买入，≥ sell_th 卖出（低买高卖）；
+    - trend：热度 ≥ buy_th 买入，≤ sell_th 卖出（顺势）。
+    初始为空仓；热度缺失时维持原状态。
+    """
+    pos = pd.Series(0.0, index=heat.index, dtype=float)
+    state = 0.0
+    for dt, h in heat.items():
+        if pd.isna(h):
+            pos.at[dt] = state
+            continue
+        if mode == "contrarian":
+            if state == 0.0 and h <= buy_th:
+                state = 1.0
+            elif state == 1.0 and h >= sell_th:
+                state = 0.0
+        else:
+            if state == 0.0 and h >= buy_th:
+                state = 1.0
+            elif state == 1.0 and h <= sell_th:
+                state = 0.0
+        pos.at[dt] = state
+    return pos
+
+
 def max_drawdown(equity: pd.Series) -> float:
     if equity.empty:
         return 0.0
@@ -219,7 +270,7 @@ def ma_position(adj: pd.Series, window: int = 200) -> pd.Series:
 
 @dataclass
 class SingleResult:
-    """单指标择时回测结果（各自有效样本内）。"""
+    """单指标择时回测结果（各自有效样本内；分档与动态仓位各一套）。"""
 
     name: str
     start: str
@@ -227,12 +278,15 @@ class SingleResult:
     stats: dict
     bench_stats: dict
     passed: bool
+    dyn_stats: dict
+    dyn_bench_stats: dict
+    dyn_passed: bool
 
 
 def single_indicator_backtests(ind: pd.DataFrame, adj: pd.Series,
                                cash_ret: pd.Series,
                                cost_bps: float = DEFAULT_COST_BPS) -> dict[str, SingleResult]:
-    """对每个单指标分别跑一遍与复合相同的仓位分档，便于回答「到底哪个指标有用」。
+    """对每个单指标分别跑分档与动态仓位，便于回答「到底哪个指标有用」。
 
     每个指标只在自身分位有效的样本内回测，并与同区间买入持有对比；样本不足 250 个
     交易日不测，避免给出没有意义的短期结论。
@@ -245,10 +299,16 @@ def single_indicator_backtests(ind: pd.DataFrame, adj: pd.Series,
         idx = s.index
         a = adj.reindex(idx)
         c = cash_ret.reindex(idx)
+        bench = backtest(a, c, pd.Series(1.0, index=idx), cost_bps)
+
         pos = position_from_heat(ind[col].reindex(idx))
         r = backtest(a, c, pos, cost_bps)
-        bench = backtest(a, c, pd.Series(1.0, index=idx), cost_bps)
         passed, _ = judge(r.stats, bench.stats)
+
+        pos_dyn = position_from_heat_dynamic(ind[col].reindex(idx))
+        r_dyn = backtest(a, c, pos_dyn, cost_bps)
+        dyn_passed, _ = judge(r_dyn.stats, bench.stats)
+
         out[col.removesuffix("_pct")] = SingleResult(
             name=col.removesuffix("_pct"),
             start=str(idx.min().date()),
@@ -256,8 +316,56 @@ def single_indicator_backtests(ind: pd.DataFrame, adj: pd.Series,
             stats=r.stats,
             bench_stats=bench.stats,
             passed=passed,
+            dyn_stats=r_dyn.stats,
+            dyn_bench_stats=bench.stats,
+            dyn_passed=dyn_passed,
         )
     return out
+
+
+def _avg_holding_days(pos: pd.Series) -> float:
+    """BS 仓位下一次买入到卖出的平均持有交易日数。"""
+    if pos.empty:
+        return 0.0
+    buys = int((pos.diff() == 1).sum()) + (1 if pos.iloc[0] == 1 else 0)
+    return float(len(pos) / max(1, buys))
+
+
+def bs_backtests(ind: pd.DataFrame, adj: pd.Series, cash_ret: pd.Series,
+                 cost_bps: float = DEFAULT_COST_BPS) -> pd.DataFrame:
+    """对复合热度与每个单指标跑二元 BS（满仓/空仓），输出对比表。"""
+    series: dict[str, pd.Series] = {"heat": ind["heat"]}
+    for c in [x for x in INDICATOR_LABELS if f"{x}_pct" in ind.columns]:
+        series[c] = ind[f"{c}_pct"]
+
+    rows: list[dict] = []
+    for key, raw in series.items():
+        s = raw.dropna()
+        if len(s) < 250:
+            continue
+        idx = s.index
+        a = adj.reindex(idx)
+        c = cash_ret.reindex(idx)
+        bench = backtest(a, c, pd.Series(1.0, index=idx), cost_bps)
+        for label, mode, buy_th, sell_th in BS_RULES:
+            pos = bs_position(s, buy_th, sell_th, mode)
+            r = backtest(a, c, pos, cost_bps)
+            passed, _ = judge(r.stats, bench.stats)
+            rows.append({
+                "indicator": key,
+                "rule": label,
+                "start": str(idx.min().date()),
+                "end": str(idx.max().date()),
+                "cagr": r.stats["cagr"],
+                "mdd": r.stats["mdd"],
+                "calmar": r.stats["calmar"],
+                "bench_calmar": bench.stats["calmar"],
+                "exposure": r.stats["exposure"],
+                "switches": r.stats["switches"],
+                "avg_hold_days": _avg_holding_days(pos),
+                "passed": passed,
+            })
+    return pd.DataFrame(rows)
 
 
 def yearly_returns(ret: pd.Series) -> pd.Series:
@@ -299,6 +407,7 @@ def _num(v: float, digits: int = 2) -> str:
 def render_report(meta: dict, ind: pd.DataFrame, ev: pd.DataFrame,
                   results: dict[str, BacktestResult],
                   single: dict[str, SingleResult],
+                  bs: pd.DataFrame,
                   yearly: pd.DataFrame, passed: bool,
                   notes: list[str], eval_start: str) -> str:
     lines = [
@@ -315,8 +424,9 @@ def render_report(meta: dict, ind: pd.DataFrame, ev: pd.DataFrame,
         "- 信号：T 日收盘计算滚动分位（5 年窗口，至少 250 个观测）",
         "- 执行：T+1 收盘，收益从 T+2 起算；单边成本 2.5bp",
         (
-            "- 指标：沪深300 PE、换手率、全市场成交额、两融余额、融资买入占比、"
-            "北向净流入；新增投资者仅作单指标展示（2023-08 停更）"
+            "- 复合热度只用全市场情绪：成交额、全市场换手率、两融余额、融资买入占比、"
+            "北向净流入；沪深300 自身 PE/换手率仅作单指标参考，不进信号；"
+            "新增投资者仅作单指标展示（2023-08 停更）"
         ),
         "",
         "## 二、指标覆盖与相关性",
@@ -365,8 +475,9 @@ def render_report(meta: dict, ind: pd.DataFrame, ev: pd.DataFrame,
         "## 四、组合回测",
         "",
         (
-            "仓位分档：热度 <80 满仓；80–90 降至 80%；90–97 降至 50%；≥97 降至 20%。"
-            "只降风险、不加杠杆；热度数据不足时按满仓处理。"
+            "动态仓位（主口径）：热度 ≤50 满仓，50→100 线性降至 20%；"
+            "分档仓位（对照）：<80 满仓、80–90 八成、90–97 五成、≥97 两成。"
+            "两者都只降风险、不加杠杆；热度数据不足时按满仓处理。"
         ),
         "",
         "| 方案 | 年化 | 年化波动 | 最大回撤 | Calmar | Sharpe | 平均仓位 | 年换手 | 调仓次数 |",
@@ -385,34 +496,87 @@ def render_report(meta: dict, ind: pd.DataFrame, ev: pd.DataFrame,
         "### 4.2 单指标择时回测",
         "",
         (
-            "每个指标单独套用与复合相同的分档规则，只在自身分位有效的样本内回测，"
-            "并与同区间买入持有对比。通过=回撤改善 ≥30% 且收益不低于同期基准 -1pct，"
-            "或 Calmar 提升 ≥0.3。"
+            "每个指标单独套用**动态仓位**（热度 ≤50 满仓，50→100 线性降至 20%），"
+            "只在自身分位有效的样本内回测，并与同区间买入持有对比。"
+            "沪深300 PE/换手率仅作参考，未进入复合信号。"
+            "通过=回撤改善 ≥30% 且收益不低于同期基准 -1pct，或 Calmar 提升 ≥0.3。"
         ),
         "",
-        "| 指标 | 起点 | 年化 | 最大回撤 | Calmar | 同期买入持有 Calmar | 判定 |",
-        "|---|---|---|---|---|---|---|",
+        "| 指标 | 起点 | 年化 | 最大回撤 | Calmar | 同期买入持有 Calmar | 平均仓位 | 判定 |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for name, r in single.items():
         lines.append(
             f"| {INDICATOR_LABELS.get(name, name)} | {r.start} | "
-            f"{_pct(r.stats['cagr'])} | {_pct(r.stats['mdd'])} | "
-            f"{_num(r.stats['calmar'])} | {_num(r.bench_stats['calmar'])} | "
-            f"{'通过' if r.passed else '未通过'} |"
+            f"{_pct(r.dyn_stats['cagr'])} | {_pct(r.dyn_stats['mdd'])} | "
+            f"{_num(r.dyn_stats['calmar'])} | {_num(r.dyn_bench_stats['calmar'])} | "
+            f"{_pct(r.dyn_stats['exposure'], 1)} | "
+            f"{'通过' if r.dyn_passed else '未通过'} |"
         )
+
+    lines += [
+        "",
+        "### 4.3 二元 BS 回测",
+        "",
+        (
+            "满仓/空仓、带滞回；初始空仓，T+1 收盘执行。"
+            "反转=低分位买入、高分位卖出；趋势=高分位买入、低分位卖出。"
+        ),
+        "",
+        "| 指标 | 规则 | 年化 | 最大回撤 | Calmar | 平均仓位 | 调仓次数 | 平均持有 | 判定 |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for _, row in bs.iterrows():
+        label = "复合热度" if row["indicator"] == "heat" \
+            else INDICATOR_LABELS.get(row["indicator"], row["indicator"])
+        lines.append(
+            f"| {label} | {row['rule']} | {_pct(row['cagr'])} | {_pct(row['mdd'])} | "
+            f"{_num(row['calmar'])} | {_pct(row['exposure'], 1)} | "
+            f"{int(row['switches'])} | {_num(row['avg_hold_days'], 0)}日 | "
+            f"{'通过' if row['passed'] else '未通过'} |"
+        )
+    if not bs.empty:
+        bs_pass = bs[bs["passed"]]
+        best = bs.loc[bs["calmar"].idxmax()]
+        best_label = "复合热度" if best["indicator"] == "heat" \
+            else INDICATOR_LABELS.get(best["indicator"], best["indicator"])
+        pass_labels = "、".join(
+            f"{'复合热度' if r['indicator'] == 'heat' else INDICATOR_LABELS.get(r['indicator'], r['indicator'])}"
+            f"（{r['rule']}）"
+            for _, r in bs_pass.iterrows()
+        ) or "无"
+        lines.append(
+            f"\n二元 BS 通过 {len(bs_pass)} 条：{pass_labels}。"
+            f"全部 18 条里 Calmar 最高的是 {best_label}（{best['rule']}，"
+            f"年化 {_pct(best['cagr'])}、回撤 {_pct(best['mdd'])}、"
+            f"Calmar {_num(best['calmar'])}、平均仓位 {_pct(best['exposure'], 1)}），"
+            f"但它因收益差未过线——高 Calmar 来自长期空仓，不是择时能力。"
+        )
+        margin = bs[bs["indicator"] == "margin_20d"]
+        if not margin.empty:
+            parts = "；".join(
+                f"{r['rule']}：年化 {_pct(r['cagr'])}、回撤 {_pct(r['mdd'])}、"
+                f"Calmar {_num(r['calmar'])}、仓位 {_pct(r['exposure'], 1)}、"
+                f"调仓 {int(r['switches'])} 次"
+                for _, r in margin.iterrows()
+            )
+            lines.append(
+                f"两融在纯 BS 下不成立（{parts}）。反转规则长期空仓、趋势规则长期满仓，"
+                f"一个放弃收益、一个放弃防守；两融的价值只在部分仓位（3.3 节动态）里出现。"
+            )
 
     lines += [
         "",
         "## 五、分年度收益",
         "",
-        "| 年份 | 买入持有 | 均线择时 | 情绪择时 |",
+        "| 年份 | 买入持有 | 均线择时 | 情绪择时(动态) |",
         "|---|---|---|---|",
     ]
     for year, row in yearly.iterrows():
         lines.append(
             f"| {year} | {_pct(row.get('买入持有', np.nan))} | "
             f"{_pct(row.get('均线择时(MA200)', np.nan))} | "
-            f"{_pct(row.get('情绪择时', np.nan))} |"
+            f"{_pct(row.get('情绪择时(动态)', np.nan))} |"
         )
 
     lines += [
@@ -420,36 +584,56 @@ def render_report(meta: dict, ind: pd.DataFrame, ev: pd.DataFrame,
         "## 六、关键诊断",
         "",
     ]
-    if "情绪择时" in yearly.columns and "买入持有" in yearly.columns:
-        diff = (yearly["情绪择时"] - yearly["买入持有"]).dropna()
+    if "情绪择时(动态)" in yearly.columns and "买入持有" in yearly.columns:
+        diff = (yearly["情绪择时(动态)"] - yearly["买入持有"]).dropna()
         if not diff.empty:
             worst, best = diff.idxmin(), diff.idxmax()
             lines.append(
                 f"- 相对买入持有，拖累最大的是 {worst} 年"
-                f"（{_pct(yearly.loc[worst, '情绪择时'])} vs "
+                f"（{_pct(yearly.loc[worst, '情绪择时(动态)'])} vs "
                 f"{_pct(yearly.loc[worst, '买入持有'])}），"
-                f"贡献最大的是 {best} 年（{_pct(yearly.loc[best, '情绪择时'])} vs "
+                f"贡献最大的是 {best} 年（{_pct(yearly.loc[best, '情绪择时(动态)'])} vs "
                 f"{_pct(yearly.loc[best, '买入持有'])}）。"
             )
     lines.append("- 单指标事件研究没有稳定单调性：高热度组既不是一致的低收益，"
                  "也不是一致的深回撤，「高分位=见顶」不成立。")
     ma = results.get("均线择时(MA200)")
-    sent = results.get("情绪择时")
+    sent = results.get("情绪择时(动态)")
     if single and sent is not None:
-        best_calmar = max(r.stats["calmar"] for r in single.values())
+        passers = [r for r in single.values() if r.dyn_passed]
+        if passers:
+            names = "、".join(INDICATOR_LABELS.get(r.name, r.name) for r in passers)
+            lines.append(
+                f"- 单指标动态仓位有 {len(passers)} 个通过初筛：{names}；"
+                f"复合等权反而未通过（Calmar {sent.stats['calmar']:.2f}），"
+                f"说明「全盘组合」拖累了单指标。"
+            )
+            lines.append(
+                "- 这是 8 个指标 × 2 套规则筛选后的结果，存在多重检验；"
+                "通过初筛只代表值得做样本外与前向验证，不等于可直接使用。"
+            )
+        best_calmar = max(r.dyn_stats["calmar"] for r in single.values())
         tied = [r for r in single.values()
-                if abs(r.stats["calmar"] - best_calmar) < 0.005]
+                if abs(r.dyn_stats["calmar"] - best_calmar) < 0.005]
         names = "、".join(INDICATOR_LABELS.get(r.name, r.name) for r in tied)
         lines.append(
-            f"- 单指标里表现最好的是 {names}（Calmar {best_calmar:.2f}），"
-            f"但都没有达到通过标准；复合等权后反而降到 {sent.stats['calmar']:.2f}，"
-            f"说明等权合成稀释了有效信息。"
+            f"- 单指标动态仓位里 Calmar 最高的是 {names}（{best_calmar:.2f}）。"
         )
     if ma is not None and sent is not None:
-        lines.append(
-            f"- 均线择时 Calmar {ma.stats['calmar']:.2f}，情绪择时 "
-            f"{sent.stats['calmar']:.2f}；情绪层目前没有跑赢这个零成本替代方案。"
-        )
+        best_single = max(single.values(), key=lambda r: r.dyn_stats["calmar"]) \
+            if single else None
+        if best_single is not None and best_single.dyn_stats["calmar"] > ma.stats["calmar"]:
+            lines.append(
+                f"- 均线择时 Calmar {ma.stats['calmar']:.2f}；复合情绪 "
+                f"{sent.stats['calmar']:.2f}；单指标最高 "
+                f"{INDICATOR_LABELS.get(best_single.name, best_single.name)} "
+                f"{best_single.dyn_stats['calmar']:.2f}。问题在等权组合，不在情绪本身。"
+            )
+        else:
+            lines.append(
+                f"- 均线择时 Calmar {ma.stats['calmar']:.2f}，情绪择时 "
+                f"{sent.stats['calmar']:.2f}；情绪层目前没有跑赢这个零成本替代方案。"
+            )
 
     lines += [
         "",

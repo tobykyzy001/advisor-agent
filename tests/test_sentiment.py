@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from quantify.analysis import sentiment as st
 from quantify.data import sentiment_data as sd
@@ -24,6 +25,7 @@ def _raw(n: int = 300, start: str = "2020-01-01") -> RawSentimentData:
         margin=margin,
         north=pd.Series(100.0, index=idx),
         market_amount=pd.Series(5000.0, index=idx),
+        market_turnover=pd.Series(1.0, index=idx),
         accounts=pd.Series(100.0, index=idx),
         meta={"benchmark": "510300.SH", "start": str(idx[0].date()),
               "end": str(idx[-1].date()), "rows": n},
@@ -56,6 +58,7 @@ def test_build_indicators_requires_three_inputs():
     raw.margin = pd.DataFrame(np.nan, index=raw.benchmark.index,
                               columns=["rzye", "rzmre"])
     raw.market_amount = pd.Series(np.nan, index=raw.benchmark.index)
+    raw.market_turnover = pd.Series(np.nan, index=raw.benchmark.index)
     raw.accounts = pd.Series(np.nan, index=raw.benchmark.index)
     ind = st.build_indicators(raw, window=20, min_periods=10)
     assert ind["heat"].notna().sum() == 0      # 只剩 PE / 换手率两个指标，不给复合热度
@@ -85,6 +88,14 @@ def test_position_ladder():
     heat = pd.Series([50.0, 85.0, 95.0, 99.0, np.nan])
     pos = st.position_from_heat(heat)
     assert list(pos) == [1.0, 0.8, 0.5, 0.2, 1.0]
+
+
+def test_position_dynamic_linear():
+    heat = pd.Series([0.0, 50.0, 75.0, 100.0, np.nan])
+    pos = st.position_from_heat_dynamic(heat)
+    assert list(pos[:4]) == pytest.approx([1.0, 1.0, 0.6, 0.2])
+    assert pos.iloc[4] == 1.0          # 数据不足按满仓
+    assert (pos.dropna() >= 0.2 - 1e-9).all() and (pos.dropna() <= 1.0).all()
 
 
 def test_backtest_execution_lag_and_cost():
@@ -132,6 +143,18 @@ def test_market_amount_uses_market_aggregate_and_datetime_index():
     assert list(s) == [200.0]          # 沪市优先 SH_MARKET，再加深市
 
 
+def test_market_turnover_is_amount_weighted():
+    raw = pd.DataFrame({
+        "trade_date": ["20260105", "20260105"],
+        "ts_code": ["SH_A", "SZ_MARKET"],
+        "amount": [100.0, 300.0],
+        "tr": [1.0, 3.0],
+    })
+    out = sd._market_series(raw)
+    assert out["turnover"].iloc[0] == 2.5      # (1×100 + 3×300) / 400
+    assert out["amount"].iloc[0] == 400.0
+
+
 def test_single_indicator_backtests():
     raw = _raw(400)
     ind = st.build_indicators(raw, window=60, min_periods=30)
@@ -140,19 +163,40 @@ def test_single_indicator_backtests():
     r = single["pe_ttm"]
     assert 0.0 <= r.stats["exposure"] <= 1.0
     assert r.bench_stats["cagr"] > 0
+    assert 0.0 <= r.dyn_stats["exposure"] <= 1.0
+
+
+def test_bs_position_hysteresis():
+    heat = pd.Series([50.0, 10.0, 50.0, 90.0, 50.0])
+    pos = st.bs_position(heat, 20.0, 80.0, "contrarian")
+    assert list(pos) == [0.0, 1.0, 1.0, 0.0, 0.0]   # 中间区间维持原状态
+    trend = st.bs_position(heat, 60.0, 40.0, "trend")
+    assert list(trend) == [0.0, 0.0, 0.0, 1.0, 1.0]
+
+
+def test_bs_backtests_table():
+    raw = _raw(400)
+    ind = st.build_indicators(raw, window=60, min_periods=30)
+    bs = st.bs_backtests(ind, raw.benchmark, raw.cash_ret)
+    assert not bs.empty
+    assert set(bs["rule"]) == {label for label, *_ in st.BS_RULES}
+    assert "heat" in set(bs["indicator"])
+    assert (bs["exposure"].between(0, 1)).all()
 
 
 def test_render_report_smoke():
     raw = _raw(300)
     ind = st.build_indicators(raw, window=20, min_periods=10)
     ev = st.event_study(ind, raw.benchmark, horizons=(20,))
-    pos = st.position_from_heat(ind["heat"])
+    pos = st.position_from_heat_dynamic(ind["heat"])
     res = st.backtest(raw.benchmark, raw.cash_ret, pos)
     single = st.single_indicator_backtests(ind, raw.benchmark, raw.cash_ret)
+    bs = st.bs_backtests(ind, raw.benchmark, raw.cash_ret)
     yearly = pd.DataFrame({"买入持有": st.yearly_returns(raw.benchmark_ret),
-                           "情绪择时": st.yearly_returns(res.daily["strategy_ret"])})
-    md = st.render_report(raw.meta, ind, ev, {"情绪择时": res}, single, yearly,
-                          False, ["测试"], "2020-01-01")
+                           "情绪择时(动态)": st.yearly_returns(res.daily["strategy_ret"])})
+    md = st.render_report(raw.meta, ind, ev, {"情绪择时(动态)": res}, single, bs,
+                          yearly, False, ["测试"], "2020-01-01")
     assert "# 情绪指标择时研究报告" in md
     assert "单指标择时回测" in md
+    assert "二元 BS 回测" in md
     assert "预注册判定" in md

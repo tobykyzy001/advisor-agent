@@ -34,6 +34,7 @@ class RawSentimentData:
     margin: pd.DataFrame                 # rzye / rzmre（三所合计）
     north: pd.Series                     # north_money（万元）
     market_amount: pd.Series             # 沪深A股成交额（亿元）
+    market_turnover: pd.Series           # 沪深A股加权换手率（%）
     accounts: pd.Series                  # 月度新增投资者（万户）
     meta: dict = field(default_factory=dict)
 
@@ -150,13 +151,15 @@ def fetch_northbound(token: str, start: str, end: str) -> pd.DataFrame:
 
 def fetch_daily_info(token: str, start: str, end: str) -> pd.DataFrame:
     rows = ts.query_chunked(
-        "daily_info", {}, "trade_date,ts_code,ts_name,amount",
+        "daily_info", {}, "trade_date,ts_code,ts_name,amount,tr",
         token, start, end, chunk_days=60,
     )
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    df["amount"] = _to_num(df["amount"])
+    for c in ("amount", "tr"):
+        if c in df.columns:
+            df[c] = _to_num(df[c])
     return df.dropna(subset=["trade_date"])
 
 
@@ -177,26 +180,49 @@ def fetch_accounts() -> pd.DataFrame:
     return out.dropna(subset=["trade_date"])
 
 
-def _market_amount(raw: pd.DataFrame) -> pd.Series:
-    """沪深A股成交额（亿元）：沪市取 SH_MARKET（无则 SH_A），深市取 SZ_MARKET。"""
+def _market_series(raw: pd.DataFrame) -> pd.DataFrame:
+    """沪深A股成交额（亿元）与加权换手率（%）。
+
+    沪市优先 SH_MARKET（无则 SH_A），深市优先 SZ_MARKET（无则主板+中小+创业板）；
+    换手率按成交额加权，缺失时退化为两市简单平均。
+    """
+    cols = ["amount", "turnover"]
     if raw.empty:
-        return pd.Series(dtype=float)
-    p = raw.pivot_table(index="trade_date", columns="ts_code",
-                        values="amount", aggfunc="sum")
+        return pd.DataFrame(columns=cols)
+    frames = {}
+    for name in ("amount", "tr"):
+        if name in raw.columns:
+            frames[name] = raw.pivot_table(index="trade_date", columns="ts_code",
+                                           values=name, aggfunc="sum")
+    amt = frames.get("amount", pd.DataFrame())
+    tr = frames.get("tr", pd.DataFrame())
 
-    def col(name: str) -> pd.Series:
-        if name in p.columns:
-            return p[name]
-        return pd.Series(index=p.index, dtype=float)
+    def col(frame: pd.DataFrame, name: str) -> pd.Series:
+        if name in frame.columns:
+            return frame[name]
+        return pd.Series(index=frame.index, dtype=float)
 
-    sh = col("SH_MARKET")
-    sh = sh.fillna(col("SH_A"))
-    sz = col("SZ_MARKET")
-    sz = sz.fillna(col("SZ_A").fillna(0) + col("SZ_SME").fillna(0) + col("SZ_GEM").fillna(0))
-    total = sh + sz
-    total.index = pd.to_datetime(total.index, format="%Y%m%d", errors="coerce")
-    total = total[~total.index.isna()]
-    return total.dropna().sort_index()
+    sh_amt = col(amt, "SH_MARKET").fillna(col(amt, "SH_A"))
+    sz_amt = col(amt, "SZ_MARKET")
+    sz_amt = sz_amt.fillna(col(amt, "SZ_A").fillna(0)
+                           + col(amt, "SZ_SME").fillna(0)
+                           + col(amt, "SZ_GEM").fillna(0))
+    total = sh_amt + sz_amt
+
+    sh_tr = col(tr, "SH_MARKET").fillna(col(tr, "SH_A"))
+    sz_tr = col(tr, "SZ_MARKET")
+    weighted = (sh_tr * sh_amt + sz_tr * sz_amt) / total
+    simple = pd.concat([sh_tr, sz_tr], axis=1).mean(axis=1)
+    turnover = weighted.fillna(simple)
+
+    out = pd.DataFrame({"amount": total, "turnover": turnover})
+    out.index = pd.to_datetime(out.index, format="%Y%m%d", errors="coerce")
+    return out[~out.index.isna()].sort_index()
+
+
+def _market_amount(raw: pd.DataFrame) -> pd.Series:
+    """兼容旧测试：只取成交额序列。"""
+    return _market_series(raw)["amount"].dropna()
 
 
 def load_raw_data(token: str, start: str, end: str,
@@ -257,7 +283,9 @@ def load_raw_data(token: str, start: str, end: str,
     hs300 = daily_index(hs300_raw, ["pe_ttm", "turnover_rate"])
     margin = daily_index(margin_raw, ["rzye", "rzmre"])
     north = daily_index(north_raw, ["north_money"])["north_money"]
-    market_amount = _market_amount(market_raw).reindex(bench.index)
+    market = _market_series(market_raw).reindex(bench.index)
+    market_amount = market["amount"]
+    market_turnover = market["turnover"]
 
     accounts = pd.Series(dtype=float)
     if not accounts_raw.empty:
@@ -277,6 +305,7 @@ def load_raw_data(token: str, start: str, end: str,
             "margin": "tushare margin（三所合计）",
             "north": "tushare moneyflow_hsgt",
             "market_amount": "tushare daily_info（SH_MARKET + SZ_MARKET）",
+            "market_turnover": "tushare daily_info（成交额加权换手率）",
             "accounts": "akshare stock_account_statistics_em（2015-04~2023-08）",
             "benchmark": f"output/quotes-store/{bench_code}.csv",
             "cash": f"output/quotes-store/{_CASH}.csv",
@@ -291,6 +320,7 @@ def load_raw_data(token: str, start: str, end: str,
         margin=margin,
         north=north,
         market_amount=market_amount,
+        market_turnover=market_turnover,
         accounts=accounts,
         meta=meta,
     )

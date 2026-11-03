@@ -143,18 +143,21 @@ def _cmd_sentiment(args: argparse.Namespace) -> None:
     horizons = tuple(int(x) for x in str(args.horizons).split(",") if x.strip())
     ev = st.event_study(ind_eval, adj_eval, horizons=horizons)
 
-    heat_pos = st.position_from_heat(ind["heat"])
-    pos_eval = heat_pos.reindex(adj_eval.index)
+    pos_dynamic = st.position_from_heat_dynamic(ind["heat"]).reindex(adj_eval.index)
+    pos_ladder = st.position_from_heat(ind["heat"]).reindex(adj_eval.index)
     ma_pos = st.ma_position(raw.benchmark).reindex(adj_eval.index)
 
     results = {
         "买入持有": st.backtest(adj_eval, cash_eval,
                              pd.Series(1.0, index=adj_eval.index), args.cost_bps),
         "均线择时(MA200)": st.backtest(adj_eval, cash_eval, ma_pos, args.cost_bps),
-        "情绪择时": st.backtest(adj_eval, cash_eval, pos_eval, args.cost_bps),
+        "情绪择时(动态)": st.backtest(adj_eval, cash_eval, pos_dynamic, args.cost_bps),
+        "情绪择时(分档)": st.backtest(adj_eval, cash_eval, pos_ladder, args.cost_bps),
     }
-    passed, notes = st.judge(results["情绪择时"].stats, results["买入持有"].stats)
+    passed, notes = st.judge(results["情绪择时(动态)"].stats,
+                             results["买入持有"].stats)
     single = st.single_indicator_backtests(ind_eval, adj_eval, cash_eval, args.cost_bps)
+    bs = st.bs_backtests(ind_eval, adj_eval, cash_eval, args.cost_bps)
 
     yearly = pd.DataFrame({
         name: st.yearly_returns(r.daily["strategy_ret"]) for name, r in results.items()
@@ -165,15 +168,19 @@ def _cmd_sentiment(args: argparse.Namespace) -> None:
     stamp = datetime.now().strftime("%Y%m%d")
     ind.to_csv(out / f"indicators_{stamp}.csv", encoding="utf-8-sig")
     ev.to_csv(out / f"event_study_{stamp}.csv", index=False, encoding="utf-8-sig")
-    results["情绪择时"].daily.to_csv(out / f"backtest_{stamp}.csv", encoding="utf-8-sig")
+    results["情绪择时(动态)"].daily.to_csv(out / f"backtest_{stamp}.csv", encoding="utf-8-sig")
     pd.DataFrame([
         {"indicator": r.name, "start": r.start, "end": r.end,
-         "cagr": r.stats["cagr"], "mdd": r.stats["mdd"],
-         "calmar": r.stats["calmar"], "bench_calmar": r.bench_stats["calmar"],
-         "passed": r.passed}
+         "dyn_cagr": r.dyn_stats["cagr"], "dyn_mdd": r.dyn_stats["mdd"],
+         "dyn_calmar": r.dyn_stats["calmar"],
+         "bench_calmar": r.dyn_bench_stats["calmar"],
+         "dyn_exposure": r.dyn_stats["exposure"], "dyn_passed": r.dyn_passed,
+         "ladder_cagr": r.stats["cagr"], "ladder_mdd": r.stats["mdd"],
+         "ladder_calmar": r.stats["calmar"], "ladder_passed": r.passed}
         for r in single.values()
     ]).to_csv(out / f"single_indicator_{stamp}.csv", index=False, encoding="utf-8-sig")
-    report = st.render_report(raw.meta, ind, ev, results, single, yearly,
+    bs.to_csv(out / f"bs_backtest_{stamp}.csv", index=False, encoding="utf-8-sig")
+    report = st.render_report(raw.meta, ind, ev, results, single, bs, yearly,
                               passed, notes, args.start)
     report_path = out / f"report_{stamp}.md"
     report_path.write_text(report, encoding="utf-8")
@@ -187,17 +194,33 @@ def _cmd_sentiment(args: argparse.Namespace) -> None:
                       f"{s['calmar']:.2f}", f"{s['sharpe']:.2f}", f"{s['exposure']:.0%}")
     console.print(table)
 
-    single_table = Table(title="单指标择时回测（各自有效样本内）")
-    for col in ("指标", "起点", "年化", "最大回撤", "Calmar", "同期基准Calmar", "判定"):
+    single_table = Table(title="单指标动态仓位回测（各自有效样本内）")
+    for col in ("指标", "起点", "年化", "最大回撤", "Calmar", "同期基准Calmar", "仓位", "判定"):
         single_table.add_column(col)
     for r in single.values():
         single_table.add_row(
             st.INDICATOR_LABELS.get(r.name, r.name), r.start,
-            f"{r.stats['cagr']:.1%}", f"{r.stats['mdd']:.1%}",
-            f"{r.stats['calmar']:.2f}", f"{r.bench_stats['calmar']:.2f}",
-            "通过" if r.passed else "未通过",
+            f"{r.dyn_stats['cagr']:.1%}", f"{r.dyn_stats['mdd']:.1%}",
+            f"{r.dyn_stats['calmar']:.2f}", f"{r.dyn_bench_stats['calmar']:.2f}",
+            f"{r.dyn_stats['exposure']:.0%}",
+            "通过" if r.dyn_passed else "未通过",
         )
     console.print(single_table)
+
+    if not bs.empty:
+        bs_table = Table(title="二元 BS 回测（满仓/空仓，带滞回）")
+        for col in ("指标", "规则", "年化", "最大回撤", "Calmar", "仓位", "调仓", "平均持有", "判定"):
+            bs_table.add_column(col)
+        for _, row in bs.iterrows():
+            label = "复合热度" if row["indicator"] == "heat" \
+                else st.INDICATOR_LABELS.get(row["indicator"], row["indicator"])
+            bs_table.add_row(
+                label, row["rule"], f"{row['cagr']:.1%}", f"{row['mdd']:.1%}",
+                f"{row['calmar']:.2f}", f"{row['exposure']:.0%}",
+                str(int(row["switches"])), f"{row['avg_hold_days']:.0f}日",
+                "通过" if row["passed"] else "未通过",
+            )
+        console.print(bs_table)
 
     console.print(f"\n{'[green]判定：通过[/green]' if passed else '[yellow]判定：未通过[/yellow]'}")
     for n in notes:
